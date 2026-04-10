@@ -603,6 +603,9 @@ end
 
 local function cmd_enum_modules(params)
     local pid = getOpenedProcessID()
+    if not pid or pid == 0 then
+        return { success = false, error = "No process attached", error_code = "NO_PROCESS" }
+    end
     local modules = enumModules(pid)  -- Try with PID first
     
     -- If that fails, try without PID
@@ -657,13 +660,19 @@ end
 
 local function cmd_get_symbol_address(params)
     local symbol = params.symbol or params.name
-    if not symbol then return { success = false, error = "No symbol name" } end
-    
-    local addr = getAddressSafe(symbol)
-    if addr then
+    if not symbol then
+        return { success = false, error = "No symbol name", error_code = "INVALID_PARAMS" }
+    end
+
+    local ok, addr = pcall(getAddressSafe, symbol)
+    if ok and addr then
         return { success = true, symbol = symbol, address = toHex(addr), value = addr }
     end
-    return { success = false, error = "Symbol not found: " .. symbol }
+    return {
+        success = false,
+        error = "Symbol not found: " .. symbol,
+        error_code = "NOT_FOUND",
+    }
 end
 
 -- ============================================================================
@@ -671,14 +680,21 @@ end
 -- ============================================================================
 
 local function cmd_read_memory(params)
+    local proc_err = requireProcess()
+    if proc_err then return proc_err end
+
     local addr = params.address
     local size = math.max(1, math.min(params.size or 256, 1048576))  -- 1 MB max
-    
+
     if type(addr) == "string" then addr = getAddressSafe(addr) end
-    if not addr then return { success = false, error = "Invalid address" } end
-    
+    if not addr then
+        return { success = false, error = "Invalid address", error_code = "INVALID_ADDRESS" }
+    end
+
     local bytes = readBytes(addr, size, true)
-    if not bytes then return { success = false, error = "Failed to read at " .. toHex(addr) } end
+    if not bytes then
+        return { success = false, error = "Failed to read at " .. toHex(addr), error_code = "NOT_FOUND" }
+    end
     
     local hex = {}
     for i, b in ipairs(bytes) do hex[i] = string.format("%02X", b) end
@@ -693,6 +709,9 @@ local function cmd_read_memory(params)
 end
 
 local function cmd_read_integer(params)
+    local proc_err = requireProcess()
+    if proc_err then return proc_err end
+
     local addr = params.address
     local itype = params.type or "dword"
 
@@ -716,6 +735,9 @@ local function cmd_read_integer(params)
 end
 
 local function cmd_read_string(params)
+    local proc_err = requireProcess()
+    if proc_err then return proc_err end
+
     local addr = params.address
     local maxlen = params.max_length or 256
     local wide = params.wide or false
@@ -724,7 +746,9 @@ local function cmd_read_string(params)
     local encoding = params.encoding or (wide and "utf16le" or "utf8")
 
     if type(addr) == "string" then addr = getAddressSafe(addr) end
-    if not addr then return { success = false, error = "Invalid address" } end
+    if not addr then
+        return { success = false, error = "Invalid address", error_code = "INVALID_ADDRESS" }
+    end
 
     local parts = {}
     local rawLen = 0
@@ -815,6 +839,9 @@ local function cmd_read_string(params)
 end
 
 local function cmd_read_pointer(params)
+    local proc_err = requireProcess()
+    if proc_err then return proc_err end
+
     local base = params.base or params.address
     local offsets = params.offsets or {}
 
@@ -859,54 +886,94 @@ end
 -- ============================================================================
 
 local function cmd_aob_scan(params)
+    local proc_err = requireProcess()
+    if proc_err then return proc_err end
+
     local pattern = params.pattern
     local protection = params.protection or "+X"
     local limit = params.limit or 100
-    
-    if not pattern then return { success = false, error = "No pattern provided" } end
-    
-    local results = AOBScan(pattern, protection)
+
+    if not pattern then
+        return { success = false, error = "No pattern provided", error_code = "INVALID_PARAMS" }
+    end
+
+    local ok, results = pcall(AOBScan, pattern, protection)
+    if not ok then
+        return {
+            success = false,
+            error = "AOBScan failed: " .. tostring(results),
+            error_code = "CE_API_UNAVAILABLE",
+        }
+    end
     if not results then return { success = true, count = 0, addresses = {} } end
-    
+
     local addresses = {}
     for i = 0, math.min(results.Count - 1, limit - 1) do
         local addrStr = results.getString(i)
         local addr = tonumber(addrStr, 16)
-        table.insert(addresses, { 
-            address = "0x" .. addrStr, 
-            value = addr 
+        table.insert(addresses, {
+            address = "0x" .. addrStr,
+            value = addr
         })
     end
-    results.destroy()
-    
+    pcall(function() results.destroy() end)
+
     return { success = true, count = #addresses, pattern = pattern, addresses = addresses }
 end
 
 local function cmd_scan_all(params)
+    local proc_err = requireProcess()
+    if proc_err then return proc_err end
+
     local value = params.value
     local vtype = params.type or "dword"
-    
-    local ms = createMemScan()
+
+    local ms_ok, ms = pcall(createMemScan)
+    if not ms_ok or not ms then
+        return {
+            success = false,
+            error = "createMemScan failed: " .. tostring(ms),
+            error_code = "CE_API_UNAVAILABLE",
+        }
+    end
     local scanOpt = soExactValue
     local varType = vtDword
-    
+
     if vtype == "byte" then varType = vtByte
     elseif vtype == "word" then varType = vtWord
     elseif vtype == "qword" then varType = vtQword
     elseif vtype == "float" then varType = vtSingle
     elseif vtype == "double" then varType = vtDouble
     elseif vtype == "string" then varType = vtString end
-    
+
     -- Use specific protection flags if provided (defaults to +W-C from Python)
     -- CRITICAL: Limit scan to User Mode space (0x7FFFFFFFFFFFFFFF) to prevent BSODs in Kernel/Guard regions
     local protect = params.protection or "+W-C"
-    ms.firstScan(scanOpt, varType, rtRounded, tostring(value), nil, 0, 0x7FFFFFFFFFFFFFFF, protect, fsmNotAligned, "1", false, false, false, false)
-    ms.waitTillDone()
-    
-    local fl = createFoundList(ms)
-    fl.initialize()
+    local fs_ok, fs_err = pcall(function()
+        ms.firstScan(scanOpt, varType, rtRounded, tostring(value), nil, 0, 0x7FFFFFFFFFFFFFFF, protect, fsmNotAligned, "1", false, false, false, false)
+        ms.waitTillDone()
+    end)
+    if not fs_ok then
+        pcall(function() ms.destroy() end)
+        return {
+            success = false,
+            error = "firstScan failed: " .. tostring(fs_err),
+            error_code = "INTERNAL_ERROR",
+        }
+    end
+
+    local fl_ok, fl = pcall(createFoundList, ms)
+    if not fl_ok or not fl then
+        pcall(function() ms.destroy() end)
+        return {
+            success = false,
+            error = "createFoundList failed: " .. tostring(fl),
+            error_code = "CE_API_UNAVAILABLE",
+        }
+    end
+    pcall(function() fl.initialize() end)
     local count = fl.getCount()
-    
+
     if serverState.scan_foundlist then
         pcall(function() serverState.scan_foundlist.destroy() end)
         serverState.scan_foundlist = nil
@@ -929,7 +996,11 @@ local function cmd_get_scan_results(params)
     local offset = math.max(0, params.offset or 0)
 
     if not serverState.scan_foundlist then
-        return { success = false, error = "No scan results. Run scan_all first." }
+        return {
+            success = false,
+            error = "No scan results. Run scan_all first.",
+            error_code = "NOT_FOUND",
+        }
     end
 
     local fl = serverState.scan_foundlist
@@ -957,16 +1028,23 @@ end
 -- ============================================================================
 
 local function cmd_next_scan(params)
+    local proc_err = requireProcess()
+    if proc_err then return proc_err end
+
     local value = params.value
     local scanType = params.scan_type or "exact"
-    
+
     if not serverState.scan_memscan then
-        return { success = false, error = "No previous scan. Run scan_all first." }
+        return {
+            success = false,
+            error = "No previous scan. Run scan_all first.",
+            error_code = "NOT_FOUND",
+        }
     end
-    
+
     local ms = serverState.scan_memscan
     local scanOpt = soExactValue
-    
+
     if scanType == "increased" then scanOpt = soIncreasedValue
     elseif scanType == "decreased" then scanOpt = soDecreasedValue
     elseif scanType == "changed" then scanOpt = soChanged
@@ -974,31 +1052,52 @@ local function cmd_next_scan(params)
     elseif scanType == "bigger" then scanOpt = soBiggerThan
     elseif scanType == "smaller" then scanOpt = soSmallerThan
     end
-    
-    if scanOpt == soExactValue then
-        ms.nextScan(scanOpt, rtRounded, tostring(value), nil, false, false, false, false, false)
-    else
-        ms.nextScan(scanOpt, rtRounded, nil, nil, false, false, false, false, false)
+
+    local ns_ok, ns_err = pcall(function()
+        if scanOpt == soExactValue then
+            ms.nextScan(scanOpt, rtRounded, tostring(value), nil, false, false, false, false, false)
+        else
+            ms.nextScan(scanOpt, rtRounded, nil, nil, false, false, false, false, false)
+        end
+        ms.waitTillDone()
+    end)
+    if not ns_ok then
+        return {
+            success = false,
+            error = "nextScan failed: " .. tostring(ns_err),
+            error_code = "INTERNAL_ERROR",
+        }
     end
-    ms.waitTillDone()
-    
+
     if serverState.scan_foundlist then
-        serverState.scan_foundlist.destroy()
+        pcall(function() serverState.scan_foundlist.destroy() end)
     end
-    local fl = createFoundList(ms)
-    fl.initialize()
+    local fl_ok, fl = pcall(createFoundList, ms)
+    if not fl_ok or not fl then
+        return {
+            success = false,
+            error = "createFoundList failed: " .. tostring(fl),
+            error_code = "CE_API_UNAVAILABLE",
+        }
+    end
+    pcall(function() fl.initialize() end)
     serverState.scan_foundlist = fl
-    
+
     return { success = true, count = fl.getCount() }
 end
 
 local function cmd_write_integer(params)
+    local proc_err = requireProcess()
+    if proc_err then return proc_err end
+
     local addr = params.address
     local value = params.value
     local vtype = params.type or "dword"
 
     if type(addr) == "string" then addr = getAddressSafe(addr) end
-    if not addr then return { success = false, error = "Invalid address" } end
+    if not addr then
+        return { success = false, error = "Invalid address", error_code = "INVALID_ADDRESS" }
+    end
 
     if vtype == "byte" then
         if type(value) ~= "number" or value < 0 or value > 0xFF then
@@ -1028,48 +1127,77 @@ local function cmd_write_integer(params)
     elseif vtype == "double" then
         ok, err = pcall(writeDouble, addr, value)
     else
-        return { success = false, error = "Unknown type: " .. tostring(vtype) }
+        return { success = false, error = "Unknown type: " .. tostring(vtype), error_code = "INVALID_PARAMS" }
     end
 
     if not ok then
-        return { success = false, error = "Write failed: " .. tostring(err), address = toHex(addr) }
+        return {
+            success = false,
+            error = "Write failed: " .. tostring(err),
+            error_code = "PERMISSION_DENIED",
+            address = toHex(addr),
+        }
     end
 
     return { success = true, address = toHex(addr), value = value, type = vtype }
 end
 
 local function cmd_write_memory(params)
+    local proc_err = requireProcess()
+    if proc_err then return proc_err end
+
     local addr = params.address
     local bytes = params.bytes
-    
+
     if type(addr) == "string" then addr = getAddressSafe(addr) end
-    if not addr then return { success = false, error = "Invalid address" } end
-    if not bytes or #bytes == 0 then return { success = false, error = "No bytes provided" } end
-    
-    local ok, err = pcall(writeBytes, addr, bytes)
-    
-    if not ok then
-        return { success = false, error = "Write failed: " .. tostring(err), address = toHex(addr) }
+    if not addr then
+        return { success = false, error = "Invalid address", error_code = "INVALID_ADDRESS" }
     end
-    
+    if not bytes or #bytes == 0 then
+        return { success = false, error = "No bytes provided", error_code = "INVALID_PARAMS" }
+    end
+
+    local ok, err = pcall(writeBytes, addr, bytes)
+
+    if not ok then
+        return {
+            success = false,
+            error = "Write failed: " .. tostring(err),
+            error_code = "PERMISSION_DENIED",
+            address = toHex(addr),
+        }
+    end
+
     return { success = true, address = toHex(addr), bytes_written = #bytes }
 end
 
 local function cmd_write_string(params)
+    local proc_err = requireProcess()
+    if proc_err then return proc_err end
+
     local addr = params.address
     local str = params.value or params.string
     local wide = params.wide or false
-    
+
     if type(addr) == "string" then addr = getAddressSafe(addr) end
-    if not addr then return { success = false, error = "Invalid address" } end
-    if not str then return { success = false, error = "No string provided" } end
-    
-    local ok, err = pcall(writeString, addr, str, wide)
-    
-    if not ok then
-        return { success = false, error = "Write failed: " .. tostring(err), address = toHex(addr) }
+    if not addr then
+        return { success = false, error = "Invalid address", error_code = "INVALID_ADDRESS" }
     end
-    
+    if not str then
+        return { success = false, error = "No string provided", error_code = "INVALID_PARAMS" }
+    end
+
+    local ok, err = pcall(writeString, addr, str, wide)
+
+    if not ok then
+        return {
+            success = false,
+            error = "Write failed: " .. tostring(err),
+            error_code = "PERMISSION_DENIED",
+            address = toHex(addr),
+        }
+    end
+
     return { success = true, address = toHex(addr), length = #str, wide = wide }
 end
 
@@ -1079,11 +1207,16 @@ end
 -- ============================================================================
 
 local function cmd_disassemble(params)
+    local proc_err = requireProcess()
+    if proc_err then return proc_err end
+
     local addr = params.address
     local count = math.max(1, math.min(params.count or 20, 1000))
 
     if type(addr) == "string" then addr = getAddressSafe(addr) end
-    if not addr then return { success = false, error = "Invalid address" } end
+    if not addr then
+        return { success = false, error = "Invalid address", error_code = "INVALID_ADDRESS" }
+    end
 
     local allInstructions = {}
     local currentAddr = addr
@@ -1113,14 +1246,23 @@ local function cmd_disassemble(params)
 end
 
 local function cmd_get_instruction_info(params)
+    local proc_err = requireProcess()
+    if proc_err then return proc_err end
+
     local addr = params.address
-    
+
     if type(addr) == "string" then addr = getAddressSafe(addr) end
-    if not addr then return { success = false, error = "Invalid address" } end
-    
+    if not addr then
+        return { success = false, error = "Invalid address", error_code = "INVALID_ADDRESS" }
+    end
+
     local ok, disasm = pcall(disassemble, addr)
     if not ok or not disasm then
-        return { success = false, error = "Failed to disassemble at " .. toHex(addr) }
+        return {
+            success = false,
+            error = "Failed to disassemble at " .. toHex(addr),
+            error_code = "NOT_FOUND",
+        }
     end
     local size = getInstructionSize(addr)
     local bytes = readBytes(addr, size or 1, true) or {}
@@ -1140,11 +1282,16 @@ local function cmd_get_instruction_info(params)
 end
 
 local function cmd_find_function_boundaries(params)
+    local proc_err = requireProcess()
+    if proc_err then return proc_err end
+
     local addr = params.address
     local maxSearch = params.max_search or 4096
 
     if type(addr) == "string" then addr = getAddressSafe(addr) end
-    if not addr then return { success = false, error = "Invalid address" } end
+    if not addr then
+        return { success = false, error = "Invalid address", error_code = "INVALID_ADDRESS" }
+    end
 
     local is64 = targetIs64Bit()
 
@@ -1178,6 +1325,9 @@ local function cmd_find_function_boundaries(params)
 end
 
 local function cmd_analyze_function(params)
+    local proc_err = requireProcess()
+    if proc_err then return proc_err end
+
     local addr = params.address
 
     if type(addr) == "string" then addr = getAddressSafe(addr) end
@@ -1260,10 +1410,15 @@ end
 -- ============================================================================
 
 local function cmd_find_references(params)
+    local proc_err = requireProcess()
+    if proc_err then return proc_err end
+
     local targetAddr = params.address
 
     if type(targetAddr) == "string" then targetAddr = getAddressSafe(targetAddr) end
-    if not targetAddr then return { success = false, error = "Invalid address" } end
+    if not targetAddr then
+        return { success = false, error = "Invalid address", error_code = "INVALID_ADDRESS" }
+    end
 
     local is64 = targetIs64Bit()
     local pattern
@@ -1307,10 +1462,15 @@ local function cmd_find_references(params)
 end
 
 local function cmd_find_call_references(params)
+    local proc_err = requireProcess()
+    if proc_err then return proc_err end
+
     local funcAddr = params.address or params.function_address
 
     if type(funcAddr) == "string" then funcAddr = getAddressSafe(funcAddr) end
-    if not funcAddr then return { success = false, error = "Invalid function address" } end
+    if not funcAddr then
+        return { success = false, error = "Invalid function address", error_code = "INVALID_ADDRESS" }
+    end
 
     -- Collect ALL matching callers to get accurate total for pagination
     local allCallers = {}
@@ -1360,6 +1520,9 @@ local function clearGhostBpSlot(addr)
 end
 
 local function cmd_set_breakpoint(params)
+    local proc_err = requireProcess()
+    if proc_err then return proc_err end
+
     local addr = params.address
     local bpId = params.id
     local captureRegs = params.capture_registers ~= false
@@ -1441,6 +1604,9 @@ local function cmd_set_breakpoint(params)
 end
 
 local function cmd_set_data_breakpoint(params)
+    local proc_err = requireProcess()
+    if proc_err then return proc_err end
+
     local addr = params.address
     local bpId = params.id
     local accessType = params.access_type or "w"  -- r, w, rw
@@ -1536,7 +1702,11 @@ local function cmd_remove_breakpoint(params)
         return { success = true, id = bpId }
     end
     
-    return { success = false, error = "Breakpoint not found: " .. tostring(bpId) }
+    return {
+        success = false,
+        error = "Breakpoint not found: " .. tostring(bpId),
+        error_code = "NOT_FOUND",
+    }
 end
 
 local function cmd_get_breakpoint_hits(params)
@@ -1608,6 +1778,9 @@ end
 -- ============================================================================
 
 local function cmd_get_memory_regions(params)
+    local proc_err = requireProcess()
+    if proc_err then return proc_err end
+
     local regions = {}
     local maxRegions = params.max or 100
     local pageSize = 0x1000  -- 4KB pages
@@ -1680,12 +1853,17 @@ local function cmd_ping(params)
 end
 
 local function cmd_search_string(params)
+    local proc_err = requireProcess()
+    if proc_err then return proc_err end
+
     local searchStr = params.string or params.pattern
     local wide = params.wide or false
     local limit = params.limit or 100
-    
-    if not searchStr then return { success = false, error = "No search string" } end
-    
+
+    if not searchStr then
+        return { success = false, error = "No search string", error_code = "INVALID_PARAMS" }
+    end
+
     -- Convert string to AOB pattern
     local pattern = ""
     for i = 1, #searchStr do
@@ -1693,10 +1871,17 @@ local function cmd_search_string(params)
         pattern = pattern .. string.format("%02X", searchStr:byte(i))
         if wide then pattern = pattern .. " 00" end
     end
-    
-    local results = AOBScan(pattern)
+
+    local ok, results = pcall(AOBScan, pattern)
+    if not ok then
+        return {
+            success = false,
+            error = "AOBScan failed: " .. tostring(results),
+            error_code = "CE_API_UNAVAILABLE",
+        }
+    end
     if not results then return { success = true, count = 0, addresses = {} } end
-    
+
     local addresses = {}
     for i = 0, math.min(results.Count - 1, limit - 1) do
         local addr = tonumber(results.getString(i), 16)
@@ -1706,8 +1891,8 @@ local function cmd_search_string(params)
             preview = preview
         })
     end
-    results.destroy()
-    
+    pcall(function() results.destroy() end)
+
     return { success = true, count = #addresses, addresses = addresses }
 end
 
@@ -1717,6 +1902,9 @@ end
 
 -- Dissect Structure: Uses CE's Structure.autoGuess to map memory into typed fields
 local function cmd_dissect_structure(params)
+    local proc_err = requireProcess()
+    if proc_err then return proc_err end
+
     local address = params.address
     local size = params.size or 256
 
@@ -1808,6 +1996,9 @@ end
 
 -- AutoAssemble: Execute an AutoAssembler script
 local function cmd_auto_assemble(params)
+    local proc_err = requireProcess()
+    if proc_err then return proc_err end
+
     local script = params.script or params.code
     local disable = params.disable or false
 
@@ -1860,9 +2051,16 @@ end
 
 -- Enum Memory Regions Full: Uses CE's native enumMemoryRegions for accurate data
 local function cmd_enum_memory_regions_full(params)
+    local proc_err = requireProcess()
+    if proc_err then return proc_err end
+
     local ok, regions = pcall(enumMemoryRegions)
     if not ok or not regions then
-        return { success = false, error = "enumMemoryRegions failed" }
+        return {
+            success = false,
+            error = "enumMemoryRegions failed",
+            error_code = "CE_API_UNAVAILABLE",
+        }
     end
 
     local allRegions = {}
@@ -1900,6 +2098,9 @@ end
 
 -- Read Pointer Chain: Follow a chain of pointers to resolve dynamic addresses
 local function cmd_read_pointer_chain(params)
+    local proc_err = requireProcess()
+    if proc_err then return proc_err end
+
     local base = params.base
     local offsets = params.offsets or {}
 
@@ -1954,14 +2155,19 @@ end
 
 -- Get RTTI Class Name: Uses C++ RTTI to identify object types
 local function cmd_get_rtti_classname(params)
+    local proc_err = requireProcess()
+    if proc_err then return proc_err end
+
     local address = params.address
-    
+
     if type(address) == "string" then address = getAddressSafe(address) end
-    if not address then return { success = false, error = "Invalid address" } end
-    
-    local className = getRTTIClassName(address)
-    
-    if className then
+    if not address then
+        return { success = false, error = "Invalid address", error_code = "INVALID_ADDRESS" }
+    end
+
+    local ok, className = pcall(getRTTIClassName, address)
+
+    if ok and className then
         return {
             success = true,
             address = toHex(address),
@@ -1981,13 +2187,18 @@ end
 
 -- Get Address Info: Converts raw address to symbolic name (module+offset)
 local function cmd_get_address_info(params)
+    local proc_err = requireProcess()
+    if proc_err then return proc_err end
+
     local address = params.address
     local includeModules = params.include_modules ~= false  -- default true
     local includeSymbols = params.include_symbols ~= false  -- default true
     local includeSections = params.include_sections or false  -- default false
-    
+
     if type(address) == "string" then address = getAddressSafe(address) end
-    if not address then return { success = false, error = "Invalid address" } end
+    if not address then
+        return { success = false, error = "Invalid address", error_code = "INVALID_ADDRESS" }
+    end
     
     local symbolicName = getNameFromAddress(address, includeModules, includeSymbols, includeSections)
     
@@ -2021,14 +2232,19 @@ end
 
 -- Checksum Memory: Calculate MD5 hash of a memory region
 local function cmd_checksum_memory(params)
+    local proc_err = requireProcess()
+    if proc_err then return proc_err end
+
     local address = params.address
     local size = params.size or 256
-    
+
     if type(address) == "string" then address = getAddressSafe(address) end
-    if not address then return { success = false, error = "Invalid address" } end
-    
+    if not address then
+        return { success = false, error = "Invalid address", error_code = "INVALID_ADDRESS" }
+    end
+
     local ok, hash = pcall(md5memory, address, size)
-    
+
     if ok and hash then
         return {
             success = true,
@@ -2041,34 +2257,42 @@ local function cmd_checksum_memory(params)
             success = false,
             address = toHex(address),
             size = size,
-            error = "Failed to calculate MD5: " .. tostring(hash)
+            error = "Failed to calculate MD5: " .. tostring(hash),
+            error_code = "NOT_FOUND",
         }
     end
 end
 
 -- Generate Signature: Creates a unique AOB pattern for an address (for re-acquisition)
 local function cmd_generate_signature(params)
+    local proc_err = requireProcess()
+    if proc_err then return proc_err end
+
     local addr = params.address
     if type(addr) == "string" then addr = getAddressSafe(addr) end
-    if not addr then return { success = false, error = "Invalid address" } end
-    
+    if not addr then
+        return { success = false, error = "Invalid address", error_code = "INVALID_ADDRESS" }
+    end
+
     -- getUniqueAOB(address) returns: AOBString, Offset
     -- It scans for a unique byte pattern that identifies this location
     local ok, signature, offset = pcall(getUniqueAOB, addr)
-    
+
     if not ok then
         return {
             success = false,
             address = toHex(addr),
-            error = "getUniqueAOB failed: " .. tostring(signature)
+            error = "getUniqueAOB failed: " .. tostring(signature),
+            error_code = "CE_API_UNAVAILABLE",
         }
     end
-    
+
     if not signature or signature == "" then
         return {
             success = false,
             address = toHex(addr),
-            error = "Could not generate unique signature - pattern not unique enough"
+            error = "Could not generate unique signature - pattern not unique enough",
+            error_code = "NOT_FOUND",
         }
     end
     
@@ -2099,26 +2323,33 @@ end
 -- Get Physical Address: Converts virtual address to physical RAM address
 -- Required for DBVM operations which work on physical memory
 local function cmd_get_physical_address(params)
+    local proc_err = requireProcess()
+    if proc_err then return proc_err end
+
     local addr = params.address
     if type(addr) == "string" then addr = getAddressSafe(addr) end
-    if not addr then return { success = false, error = "Invalid address" } end
-    
+    if not addr then
+        return { success = false, error = "Invalid address", error_code = "INVALID_ADDRESS" }
+    end
+
     -- Check if DBK (kernel driver) is available
     local ok, phys = pcall(dbk_getPhysicalAddress, addr)
-    
+
     if not ok then
         return {
             success = false,
             virtual_address = toHex(addr),
-            error = "DBK driver not loaded. Run dbk_initialize() first or load it via CE settings."
+            error = "DBK driver not loaded. Run dbk_initialize() first or load it via CE settings.",
+            error_code = "DBK_NOT_LOADED",
         }
     end
-    
+
     if not phys or phys == 0 then
         return {
             success = false,
             virtual_address = toHex(addr),
-            error = "Could not resolve physical address. Page may not be present in RAM."
+            error = "Could not resolve physical address. Page may not be present in RAM.",
+            error_code = "NOT_FOUND",
         }
     end
     
@@ -2135,23 +2366,36 @@ end
 -- Start DBVM Watch: Hypervisor-level memory access monitoring
 -- This is the "Find what writes/reads" equivalent but at Ring -1 (invisible to games)
 local function cmd_start_dbvm_watch(params)
+    local proc_err = requireProcess()
+    if proc_err then return proc_err end
+
     local addr = params.address
     local mode = params.mode or "w"  -- "w" = write, "r" = read, "rw" = both, "x" = execute
     local maxEntries = params.max_entries or 1000  -- Internal buffer size
-    
+
     if type(addr) == "string" then addr = getAddressSafe(addr) end
-    if not addr then return { success = false, error = "Invalid address" } end
-    
+    if not addr then
+        return { success = false, error = "Invalid address", error_code = "INVALID_ADDRESS" }
+    end
+
     -- 0. Safety Checks
     if not dbk_initialized() then
-        return { success = false, error = "DBK driver not loaded. Go to Settings -> Debugger -> Kernelmode" }
+        return {
+            success = false,
+            error = "DBK driver not loaded. Go to Settings -> Debugger -> Kernelmode",
+            error_code = "DBK_NOT_LOADED",
+        }
     end
-    
+
     if not dbvm_initialized() then
         -- Try to initialize if possible
         pcall(dbvm_initialize)
         if not dbvm_initialized() then
-            return { success = false, error = "DBVM not running. Go to Settings -> Debugger -> Use DBVM" }
+            return {
+                success = false,
+                error = "DBVM not running. Go to Settings -> Debugger -> Use DBVM",
+                error_code = "DBVM_NOT_LOADED",
+            }
         end
     end
 
@@ -2242,21 +2486,27 @@ end
 -- Poll DBVM Watch: Retrieve logged accesses WITHOUT stopping the watch
 -- This is CRITICAL for continuous packet monitoring - logs can be polled repeatedly
 local function cmd_poll_dbvm_watch(params)
+    local proc_err = requireProcess()
+    if proc_err then return proc_err end
+
     local addr = params.address
     local clear = (params.clear ~= false)  -- nil→true, false→false, true→true
     local max_results = params.max_results or 1000
-    
+
     if type(addr) == "string" then addr = getAddressSafe(addr) end
-    if not addr then return { success = false, error = "Invalid address" } end
-    
+    if not addr then
+        return { success = false, error = "Invalid address", error_code = "INVALID_ADDRESS" }
+    end
+
     local watchKey = toHex(addr)
     local watchInfo = serverState.active_watches[watchKey]
-    
+
     if not watchInfo then
         return {
             success = false,
             virtual_address = toHex(addr),
-            error = "No active watch found for this address. Call start_dbvm_watch first."
+            error = "No active watch found for this address. Call start_dbvm_watch first.",
+            error_code = "NOT_FOUND",
         }
     end
     
@@ -2313,6 +2563,9 @@ end
 -- Stop DBVM Watch: Retrieve logged accesses and disable monitoring
 -- Returns all instructions that touched the monitored memory
 local function cmd_stop_dbvm_watch(params)
+    local proc_err = requireProcess()
+    if proc_err then return proc_err end
+
     local addr = params.address
     if type(addr) == "string" then addr = getAddressSafe(addr) end
     if not addr then

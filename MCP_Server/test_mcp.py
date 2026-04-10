@@ -1899,6 +1899,514 @@ def main():
              params={"state": "none"},
              validators=[has_field("success", bool), field_equals("success", True)])
 
+        _add("ext_u23_set_progress_value",
+             "Unit-23: set_progress_value 0",
+             "set_progress_value",
+             params={"value": 0},
+             validators=[has_field("success", bool), field_equals("success", True)])
+
+        # ---------- Unit 8: set_memory_protection roundtrip ----------
+        _add("ext_u8_set_memory_protection",
+             "Unit-8: set_memory_protection rwx on scratch alloc",
+             "set_memory_protection",
+             params={"address": _scratch_hex0 if _scratch_addr else "0x0",
+                     "size": 64,
+                     "read": True, "write": True, "execute": True},
+             validators=[has_field("success", bool), field_equals("success", True)],
+             skip_reason=_write_skip)
+
+        # ---------- Unit 10: debugger lifecycle roundtrip ----------
+        # debug_process attaches CE's debugger to the target. This has real
+        # side effects, so we ALWAYS call debug_detach at the end of the
+        # lifecycle even if a middle step fails (the detach test runs
+        # unconditionally via its own skip logic).
+        _add("ext_u10_debug_process",
+             "Unit-10: debug_process (attach CE debugger, interface=0)",
+             "debug_process",
+             params={"interface": 0},
+             validators=[has_field("success", bool), field_equals("success", True)],
+             skip_reason=None if _proc_ok else "No process attached")
+
+        _debug_attached = (
+            all_tests.get("ext_u10_debug_process") is not None and
+            all_tests["ext_u10_debug_process"].result == TestResult.PASSED
+        )
+
+        _add("ext_u10_debug_is_debugging_after_attach",
+             "Unit-10: debug_is_debugging should report True after attach",
+             "debug_is_debugging",
+             validators=[has_field("success", bool), field_equals("success", True),
+                         has_field("is_debugging", bool),
+                         field_equals("is_debugging", True)],
+             skip_reason=_cascaded_skip("ext_u10_debug_process",
+                                        None if _proc_ok else "No process attached",
+                                        "debug_process failed"))
+
+        _add("ext_u10_debug_detach",
+             "Unit-10: debug_detach (release debugger after roundtrip)",
+             "debug_detach",
+             validators=[has_field("success", bool)],
+             skip_reason=None if _debug_attached else "debug_process did not attach")
+
+        # ---------- Unit 14: file roundtrip + md5_file + checksum read-back ----------
+        import os as _os
+        _tempfile_path = _os.path.join(_os.environ.get("TEMP", "C:\\Windows\\Temp"),
+                                       "mcp_ce_bridge_test_v12.bin")
+        _add("ext_u14_write_region_to_file",
+             "Unit-14: write_region_to_file (scratch -> temp file)",
+             "write_region_to_file",
+             params={"address": _scratch_hex0 if _scratch_addr else "0x0",
+                     "size": 64, "filename": _tempfile_path},
+             validators=[has_field("success", bool), field_equals("success", True),
+                         has_field("bytes_written", int)],
+             skip_reason=_write_skip)
+
+        _add("ext_u14_md5_file",
+             "Unit-14: md5_file on the file just written",
+             "md5_file",
+             params={"filename": _tempfile_path},
+             validators=[has_field("success", bool), field_equals("success", True),
+                         has_field("md5_hash", str),
+                         lambda r: (len(r.get("md5_hash", "")) == 32,
+                                    f"MD5 should be 32 chars, got {len(r.get('md5_hash', ''))}")],
+             skip_reason=_cascaded_skip("ext_u14_write_region_to_file",
+                                        _write_skip, "write_region_to_file failed"))
+
+        _add("ext_u14_read_region_from_file",
+             "Unit-14: read_region_from_file (temp file -> scratch+64)",
+             "read_region_from_file",
+             params={"filename": _tempfile_path,
+                     "destination": hex(_scratch_addr + 64) if _scratch_addr else "0x0"},
+             validators=[has_field("success", bool), field_equals("success", True),
+                         has_field("bytes_read", int)],
+             skip_reason=_cascaded_skip("ext_u14_write_region_to_file",
+                                        _write_skip, "write_region_to_file failed"))
+
+        # ---------- Unit 15: persistent_scan full lifecycle ----------
+        _ext_u15_lifecycle_name = "mcp_test_lifecycle_v12"
+        _add("ext_u15_persistent_first_scan",
+             "Unit-15: persistent_scan_first_scan (dword=1)",
+             "persistent_scan_first_scan",
+             params={"name": _ext_u15_lifecycle_name, "value": "1",
+                     "type": "dword", "scan_option": "exact"},
+             validators=[has_field("success", bool), field_equals("success", True)],
+             skip_reason=None if _proc_ok else "No process attached")
+
+        _add("ext_u15_persistent_next_scan",
+             "Unit-15: persistent_scan_next_scan (unchanged)",
+             "persistent_scan_next_scan",
+             params={"name": _ext_u15_lifecycle_name,
+                     "scan_option": "unchanged"},
+             validators=[has_field("success", bool), field_equals("success", True)],
+             skip_reason=_cascaded_skip("ext_u15_persistent_first_scan",
+                                        None if _proc_ok else "No process attached",
+                                        "first_scan failed"))
+
+        _add("ext_u15_persistent_get_results",
+             "Unit-15: persistent_scan_get_results (pagination shape)",
+             "persistent_scan_get_results",
+             params={"name": _ext_u15_lifecycle_name,
+                     "offset": 0, "limit": 10},
+             validators=[has_field("success", bool), field_equals("success", True),
+                         has_field("total", int), has_field("offset", int),
+                         has_field("limit", int), has_field("returned", int)],
+             skip_reason=_cascaded_skip("ext_u15_persistent_first_scan",
+                                        None if _proc_ok else "No process attached",
+                                        "first_scan failed"))
+
+        _add("ext_u15_persistent_lifecycle_destroy",
+             "Unit-15: persistent_scan_destroy (cleanup lifecycle scan)",
+             "persistent_scan_destroy",
+             params={"name": _ext_u15_lifecycle_name},
+             validators=[has_field("success", bool), field_equals("success", True)],
+             skip_reason=_cascaded_skip("ext_u15_persistent_first_scan",
+                                        None if _proc_ok else "No process attached",
+                                        "first_scan failed"))
+
+        # ---------- Unit 17: input automation (safe keys / idempotent mouse) ----------
+        # VK_F24 (0x87) is an unused F-key — pressing it should be a no-op on
+        # any normal target. We still verify the handler returns success=true.
+        _add("ext_u17_key_down_f24",
+             "Unit-17: key_down on VK_F24 (safe)",
+             "key_down",
+             params={"vk": 0x87},
+             validators=[has_field("success", bool), field_equals("success", True)])
+
+        _add("ext_u17_key_up_f24",
+             "Unit-17: key_up on VK_F24 (cleanup of key_down)",
+             "key_up",
+             params={"vk": 0x87},
+             validators=[has_field("success", bool), field_equals("success", True)])
+
+        _add("ext_u17_do_key_press_f24",
+             "Unit-17: do_key_press on VK_F24 (full down+up)",
+             "do_key_press",
+             params={"vk": 0x87},
+             validators=[has_field("success", bool), field_equals("success", True)])
+
+        # set_mouse_pos: read current, set back to the same spot, verify
+        # successful round-trip without actually moving the cursor.
+        _u17_mouse_baseline = all_tests.get("u24_smoke_get_mouse_pos")
+        _u17_mx = _u17_my = None
+        if _u17_mouse_baseline and _u17_mouse_baseline.result == TestResult.PASSED:
+            resp = _u17_mouse_baseline.response or {}
+            if isinstance(resp, dict):
+                _u17_mx = resp.get("x")
+                _u17_my = resp.get("y")
+        _add("ext_u17_set_mouse_pos_idempotent",
+             "Unit-17: set_mouse_pos (idempotent — restores current position)",
+             "set_mouse_pos",
+             params={"x": _u17_mx if _u17_mx is not None else 100,
+                     "y": _u17_my if _u17_my is not None else 100},
+             validators=[has_field("success", bool), field_equals("success", True)])
+
+        # ---------- Unit 18: memory record lifecycle ----------
+        _ext_u18_mr_desc = "mcp_test_record_v12"
+        _add("ext_u18_create_memory_record",
+             "Unit-18: create_memory_record (dword on scratch)",
+             "create_memory_record",
+             params={"description": _ext_u18_mr_desc,
+                     "address": _scratch_hex0 if _scratch_addr else "0x00400000",
+                     "var_type": "dword"},
+             validators=[has_field("success", bool), field_equals("success", True),
+                         has_field("id", int)])
+
+        _ext_u18_mr_id = None
+        if all_tests.get("ext_u18_create_memory_record") is not None:
+            cr_resp = all_tests["ext_u18_create_memory_record"].response or {}
+            if isinstance(cr_resp, dict):
+                _ext_u18_mr_id = cr_resp.get("id")
+
+        _add("ext_u18_get_memory_record_by_id",
+             "Unit-18: get_memory_record by id",
+             "get_memory_record",
+             params={"id": _ext_u18_mr_id if _ext_u18_mr_id is not None else -1},
+             validators=[has_field("success", bool), field_equals("success", True),
+                         has_field("description", str)],
+             skip_reason=_cascaded_skip("ext_u18_create_memory_record",
+                                        None, "create_memory_record failed"))
+
+        _add("ext_u18_get_memory_record_value",
+             "Unit-18: get_memory_record_value (read current)",
+             "get_memory_record_value",
+             params={"id": _ext_u18_mr_id if _ext_u18_mr_id is not None else -1},
+             validators=[has_field("success", bool), field_equals("success", True),
+                         has_field("value", str)],
+             skip_reason=_cascaded_skip("ext_u18_create_memory_record",
+                                        None, "create_memory_record failed"))
+
+        _add("ext_u18_set_memory_record_value",
+             "Unit-18: set_memory_record_value (write 0)",
+             "set_memory_record_value",
+             params={"id": _ext_u18_mr_id if _ext_u18_mr_id is not None else -1,
+                     "value": "0"},
+             validators=[has_field("success", bool), field_equals("success", True)],
+             skip_reason=_cascaded_skip("ext_u18_create_memory_record",
+                                        None, "create_memory_record failed"))
+
+        _add("ext_u18_get_address_list",
+             "Unit-18: get_address_list (should include our record)",
+             "get_address_list",
+             params={"offset": 0, "limit": 100},
+             validators=[has_field("success", bool), field_equals("success", True),
+                         has_field("records", list)],
+             skip_reason=_cascaded_skip("ext_u18_create_memory_record",
+                                        None, "create_memory_record failed"))
+
+        _add("ext_u18_delete_memory_record",
+             "Unit-18: delete_memory_record (cleanup)",
+             "delete_memory_record",
+             params={"id": _ext_u18_mr_id if _ext_u18_mr_id is not None else -1},
+             validators=[has_field("success", bool), field_equals("success", True)],
+             skip_reason=_cascaded_skip("ext_u18_create_memory_record",
+                                        None, "create_memory_record failed"))
+
+        # ---------- Unit 19: structure CRUD lifecycle ----------
+        _add("ext_u19_create_structure",
+             "Unit-19: create_structure",
+             "create_structure",
+             params={"name": "mcp_test_struct_v12"},
+             validators=[has_field("success", bool), field_equals("success", True),
+                         has_field("structure_id", int)])
+
+        _ext_u19_sid = None
+        if all_tests.get("ext_u19_create_structure") is not None:
+            _sr = all_tests["ext_u19_create_structure"].response or {}
+            if isinstance(_sr, dict):
+                _ext_u19_sid = _sr.get("structure_id")
+
+        _add("ext_u19_add_element_to_structure",
+             "Unit-19: add_element_to_structure (dword @ +0)",
+             "add_element_to_structure",
+             params={"structure_id": _ext_u19_sid if _ext_u19_sid is not None else -1,
+                     "name": "field0", "offset": 0, "type": "dword"},
+             validators=[has_field("success", bool), field_equals("success", True)],
+             skip_reason=_cascaded_skip("ext_u19_create_structure",
+                                        None, "create_structure failed"))
+
+        _add("ext_u19_get_structure_elements",
+             "Unit-19: get_structure_elements (verify insertion)",
+             "get_structure_elements",
+             params={"structure_id": _ext_u19_sid if _ext_u19_sid is not None else -1},
+             validators=[has_field("success", bool), field_equals("success", True),
+                         has_field("elements", list),
+                         lambda r: (len(r.get("elements", [])) >= 1,
+                                    f"Expected at least 1 element, got {len(r.get('elements', []))}")],
+             skip_reason=_cascaded_skip("ext_u19_create_structure",
+                                        None, "create_structure failed"))
+
+        _add("ext_u19_get_structure_by_name",
+             "Unit-19: get_structure_by_name (roundtrip lookup)",
+             "get_structure_by_name",
+             params={"name": "mcp_test_struct_v12"},
+             validators=[has_field("success", bool), field_equals("success", True),
+                         has_field("structure_id", int)],
+             skip_reason=_cascaded_skip("ext_u19_create_structure",
+                                        None, "create_structure failed"))
+
+        _add("ext_u19_export_structure_to_xml",
+             "Unit-19: export_structure_to_xml",
+             "export_structure_to_xml",
+             params={"structure_id": _ext_u19_sid if _ext_u19_sid is not None else -1},
+             validators=[has_field("success", bool), field_equals("success", True),
+                         has_field("xml", str),
+                         lambda r: (len(r.get("xml", "")) > 0,
+                                    "XML export should be non-empty")],
+             skip_reason=_cascaded_skip("ext_u19_create_structure",
+                                        None, "create_structure failed"))
+
+        _add("ext_u19_delete_structure",
+             "Unit-19: delete_structure (cleanup)",
+             "delete_structure",
+             params={"structure_id": _ext_u19_sid if _ext_u19_sid is not None else -1},
+             validators=[has_field("success", bool), field_equals("success", True)],
+             skip_reason=_cascaded_skip("ext_u19_create_structure",
+                                        None, "create_structure failed"))
+
+        # ---------- Unit 20a: extra file/clipboard ops ----------
+        _add("ext_u20a_get_directory_list_temp",
+             "Unit-20a: get_directory_list on TEMP",
+             "get_directory_list",
+             params={"path": _os.environ.get("TEMP", "C:\\Windows\\Temp")},
+             validators=[has_field("success", bool), field_equals("success", True),
+                         has_field("directories", list)])
+
+        _add("ext_u20a_get_file_list_temp",
+             "Unit-20a: get_file_list on TEMP",
+             "get_file_list",
+             params={"path": _os.environ.get("TEMP", "C:\\Windows\\Temp")},
+             validators=[has_field("success", bool), field_equals("success", True),
+                         has_field("files", list)])
+
+        _u20a_clip_text = "mcp_ce_bridge_test_v12_clipboard"
+        _add("ext_u20a_write_clipboard",
+             "Unit-20a: write_clipboard",
+             "write_clipboard",
+             params={"text": _u20a_clip_text},
+             validators=[has_field("success", bool), field_equals("success", True)])
+
+        _add("ext_u20a_read_clipboard_roundtrip",
+             "Unit-20a: read_clipboard after write (roundtrip)",
+             "read_clipboard",
+             validators=[has_field("success", bool), field_equals("success", True),
+                         has_field("text", str),
+                         lambda r: (r.get("text") == _u20a_clip_text,
+                                    f"Expected {_u20a_clip_text!r}, got {r.get('text')!r}")],
+             skip_reason=_cascaded_skip("ext_u20a_write_clipboard",
+                                        None, "write_clipboard failed"))
+
+        _add("ext_u20a_delete_file_nonexistent",
+             "Unit-20a: delete_file on nonexistent file (expect graceful failure)",
+             "delete_file",
+             params={"filename": _os.path.join(_os.environ.get("TEMP", "C:\\Windows\\Temp"),
+                                                "mcp_ce_bridge_never_exists_v12.tmp")},
+             validators=[has_field("success", bool)])
+
+        # ---------- Unit 21: dbk_get_cr4 completes the CR-register trio ----------
+        _add("ext_u21_dbk_get_cr4",
+             "Unit-21: dbk_get_cr4",
+             "dbk_get_cr4",
+             validators=[has_field("success", bool)],
+             skip_reason=_u21_skip)
+
+        # ---------- Unit 22: check_synchronize smoke (runs in main thread) ----------
+        _add("ext_u22_check_synchronize",
+             "Unit-22: check_synchronize",
+             "check_synchronize",
+             validators=[has_field("success", bool), field_equals("success", True)])
+
+        # ---------- Unit 10: pause/unpause process roundtrip ----------
+        # Pause puts the target into a suspended state; unpause resumes.
+        # Running pause_process on a game will visibly freeze it, so we
+        # immediately unpause regardless of pause_process's result. Both
+        # operations are idempotent at the OS level.
+        _add("ext_u10_pause_process",
+             "Unit-10: pause_process",
+             "pause_process",
+             validators=[has_field("success", bool), field_equals("success", True)],
+             skip_reason=None if _proc_ok else "No process attached")
+
+        _add("ext_u10_unpause_process",
+             "Unit-10: unpause_process (cleanup)",
+             "unpause_process",
+             validators=[has_field("success", bool), field_equals("success", True)],
+             skip_reason=None if _proc_ok else "No process attached")
+
+        # ---------- Unit 12: symbol handler operations ----------
+        _add("ext_u12_load_new_symbols",
+             "Unit-12: load_new_symbols",
+             "load_new_symbols",
+             validators=[has_field("success", bool)],
+             skip_reason=None if _proc_ok else "No process attached")
+
+        _add("ext_u12_reinitialize_symbol_handler",
+             "Unit-12: reinitialize_symbol_handler",
+             "reinitialize_symbol_handler",
+             validators=[has_field("success", bool)],
+             skip_reason=None if _proc_ok else "No process attached")
+
+        _add("ext_u12_get_symbol_info_kernel32_loadlibrary",
+             "Unit-12: get_symbol_info on kernel32.LoadLibraryA",
+             "get_symbol_info",
+             params={"name": "LoadLibraryA"},
+             validators=[has_field("success", bool)],
+             skip_reason=None if _proc_ok else "No process attached")
+
+        # ---------- Unit 15: aob_scan_module (module-scoped search) ----------
+        # Module name comes from the baseline discovery in the early tests.
+        _ext_u15_module_name = None
+        _pi_resp = all_tests.get("get_process_info")
+        if _pi_resp and _pi_resp.result == TestResult.PASSED:
+            _pi_data = _pi_resp.response or {}
+            if isinstance(_pi_data, dict):
+                _ext_u15_module_name = _pi_data.get("process_name")
+        _add("ext_u15_aob_scan_module",
+             "Unit-15: aob_scan_module (x64 prologue in main module)",
+             "aob_scan_module",
+             params={"pattern": "48 89 5C 24",
+                     "module_name": _ext_u15_module_name or "ntdll.dll",
+                     "protection": "+X"},
+             validators=[has_field("success", bool)],
+             skip_reason=None if _proc_ok else "No process attached")
+
+        # aob_scan_module_unique: common prologue is usually non-unique → expect
+        # success=false with "not unique" style error. Use _ErrorCase.
+        all_tests["ext_u15_aob_scan_module_unique_non_unique"] = _ErrorCase(
+            "Unit-15: aob_scan_module_unique on common prologue (expect non-unique)",
+            "aob_scan_module_unique",
+            params={"pattern": "48 89 5C 24",
+                    "module_name": _ext_u15_module_name or "ntdll.dll",
+                    "protection": "+X"},
+            validators=[_expect_error()],
+            skip_reason=None if _proc_ok else "No process attached",
+        )
+        all_tests["ext_u15_aob_scan_module_unique_non_unique"].run(client)
+
+        # ---------- Unit 7: open_process (reattach to current PID — idempotent) ----------
+        _ext_u7_current_pid = None
+        _gopi = all_tests.get("ext_u7_get_opened_process_id")
+        if _gopi and _gopi.result == TestResult.PASSED:
+            _gr = _gopi.response or {}
+            if isinstance(_gr, dict):
+                _ext_u7_current_pid = _gr.get("process_id")
+        _add("ext_u7_open_process_idempotent",
+             "Unit-7: open_process on current PID (reattach should succeed)",
+             "open_process",
+             params={"process_id_or_name": str(_ext_u7_current_pid or 0)},
+             validators=[has_field("success", bool), field_equals("success", True)],
+             skip_reason=None if _proc_ok and _ext_u7_current_pid else "No process attached")
+
+        # ---------- Unit 13: script generators (no side effects, just return strings) ----------
+        _add("ext_u13_generate_code_injection_script",
+             "Unit-13: generate_code_injection_script for an address",
+             "generate_code_injection_script",
+             params={"address": hex(entry_point) if entry_point else "0x00401000"},
+             validators=[has_field("success", bool), field_equals("success", True),
+                         has_field("script", str)],
+             skip_reason=None if _proc_ok else "No process attached")
+
+        _add("ext_u13_generate_api_hook_script",
+             "Unit-13: generate_api_hook_script for an address",
+             "generate_api_hook_script",
+             params={"address": hex(entry_point) if entry_point else "0x00401000",
+                     "size": 6,
+                     "target_address": hex((entry_point or 0) + 0x1000)},
+             validators=[has_field("success", bool), field_equals("success", True),
+                         has_field("script", str)],
+             skip_reason=None if _proc_ok else "No process attached")
+
+        # ---------- Unit 20a: get_file_version on CE executable ----------
+        _ce_exe = _os.path.join(_os.environ.get("WINDIR", "C:\\Windows"), "System32", "kernel32.dll")
+        _add("ext_u20a_get_file_version_kernel32",
+             "Unit-20a: get_file_version on kernel32.dll",
+             "get_file_version",
+             params={"filename": _ce_exe},
+             validators=[has_field("success", bool)])
+
+        # ---------- Unit 12: enable_windows_symbols / enable_kernel_symbols ----------
+        _add("ext_u12_enable_windows_symbols",
+             "Unit-12: enable_windows_symbols",
+             "enable_windows_symbols",
+             validators=[has_field("success", bool)],
+             skip_reason=None if _proc_ok else "No process attached")
+
+        _add("ext_u12_enable_kernel_symbols",
+             "Unit-12: enable_kernel_symbols",
+             "enable_kernel_symbols",
+             validators=[has_field("success", bool)],
+             skip_reason=None if _proc_ok else "No process attached")
+
+        # ---------- Extra safe coverage for misc handlers ----------
+        # Plain read_pointer (distinct from read_pointer_chain) — single
+        # dereference at the scratch address. Exercises the cmd_read_pointer
+        # path that the Python tool usually routes around.
+        all_tests["ext_read_pointer_plain"] = TestCase(
+            "Plain read_pointer (single dereference at scratch)",
+            "read_pointer",
+            params={"base": _scratch_hex0 if _scratch_addr else "0x00400000",
+                    "offsets": []},
+            validators=[has_field("success", bool), field_equals("success", True),
+                        field_is_hex_address("base"),
+                        field_is_hex_address("final_address")],
+            skip_reason=None if _proc_ok else "No process attached",
+        )
+        all_tests["ext_read_pointer_plain"].run(client)
+
+        # queue_to_main_thread: schedules a Lua chunk on CE's main thread.
+        # check_synchronize immediately afterwards runs it. The chunk is a
+        # no-op so there are no side effects.
+        _add("ext_u22_queue_to_main_thread",
+             "Unit-22: queue_to_main_thread (no-op)",
+             "queue_to_main_thread",
+             params={"code": "return true"},
+             validators=[has_field("success", bool), field_equals("success", True)])
+
+        # dbk_writes_ignore_write_protection(false) — toggles the DBK flag off.
+        # If DBK isn't loaded the handler returns success=false gracefully.
+        _add("ext_u21_dbk_writes_ignore_wp_off",
+             "Unit-21: dbk_writes_ignore_write_protection(false)",
+             "dbk_writes_ignore_write_protection",
+             params={"enable": False},
+             validators=[has_field("success", bool)],
+             skip_reason=_u21_skip)
+
+        # send_window_message WM_NULL (0) — guaranteed no-op delivered to a
+        # window handle we already discovered. Passing 0 wparam/lparam avoids
+        # any state mutation on the target.
+        _u16_handle = None
+        _fw = all_tests.get("u24_smoke_find_window")
+        if _fw and _fw.result == TestResult.PASSED:
+            _fwd = _fw.response or {}
+            if isinstance(_fwd, dict):
+                _u16_handle = _fwd.get("handle")
+        _add("ext_u16_send_window_message_wm_null",
+             "Unit-16: send_window_message WM_NULL (no-op)",
+             "send_window_message",
+             params={"handle": _u16_handle or "0x0", "msg": 0,
+                     "wparam": 0, "lparam": 0},
+             validators=[has_field("success", bool)],
+             skip_reason="No window handle discovered" if not _u16_handle else None)
+
         # ---------- Cleanup: free the Unit-8 shared-memory alloc if it succeeded ----------
         if _ext_u8_shared_addr:
             _add("ext_u8_free_shared_memory",
@@ -1952,51 +2460,84 @@ def main():
     ]
     _ext_base_keys = [
         "ext_read_integer_qword", "ext_poll_dbvm_watch_no_active",
+        "ext_read_pointer_plain",
     ]
     _ext_u7_keys = [
         "ext_u7_get_opened_process_id", "ext_u7_get_opened_process_handle",
         "ext_u7_get_foreground_process", "ext_u7_get_processid_from_name",
+        "ext_u7_open_process_idempotent",
     ]
     _ext_u8_keys = [
         "ext_u8_get_memory_protection", "ext_u8_allocate_shared_memory",
         "ext_u8_full_access", "ext_u8_free_shared_memory",
+        "ext_u8_set_memory_protection",
     ]
     _ext_u10_keys = [
         "ext_u10_debug_is_debugging", "ext_u10_debug_get_current_debugger_interface",
+        "ext_u10_debug_process", "ext_u10_debug_is_debugging_after_attach",
+        "ext_u10_debug_detach",
+        "ext_u10_pause_process", "ext_u10_unpause_process",
     ]
     _ext_u12_keys = [
         "ext_u12_register_symbol", "ext_u12_enum_registered_contains",
         "ext_u12_unregister_symbol", "ext_u12_get_module_size",
+        "ext_u12_load_new_symbols", "ext_u12_reinitialize_symbol_handler",
+        "ext_u12_get_symbol_info_kernel32_loadlibrary",
+        "ext_u12_enable_windows_symbols", "ext_u12_enable_kernel_symbols",
     ]
     _ext_u13_keys = [
         "ext_u13_assemble_instruction_nop", "ext_u13_auto_assemble_check_valid",
+        "ext_u13_generate_code_injection_script", "ext_u13_generate_api_hook_script",
     ]
     _ext_u14_keys = [
         "ext_u14_md5_memory", "ext_u14_copy_memory", "ext_u14_compare_memory_equal",
         "ext_u14_create_section_and_map_view", "ext_u14_map_view_of_section",
+        "ext_u14_write_region_to_file", "ext_u14_md5_file",
+        "ext_u14_read_region_from_file",
     ]
     _ext_u15_keys = [
         "ext_u15_aob_scan_unique", "ext_u15_create_persistent_scan",
         "ext_u15_persistent_scan_destroy",
+        "ext_u15_persistent_first_scan", "ext_u15_persistent_next_scan",
+        "ext_u15_persistent_get_results", "ext_u15_persistent_lifecycle_destroy",
+        "ext_u15_aob_scan_module", "ext_u15_aob_scan_module_unique_non_unique",
     ]
     _ext_u16_keys = [
         "ext_u16_get_window_caption", "ext_u16_get_window_class_name",
-        "ext_u16_get_window_process_id",
+        "ext_u16_get_window_process_id", "ext_u16_send_window_message_wm_null",
     ]
     _ext_u17_keys = [
         "ext_u17_get_pixel", "ext_u17_is_key_pressed_f24", "ext_u17_get_screen_info",
+        "ext_u17_key_down_f24", "ext_u17_key_up_f24", "ext_u17_do_key_press_f24",
+        "ext_u17_set_mouse_pos_idempotent",
+    ]
+    _ext_u18_keys = [
+        "ext_u18_create_memory_record", "ext_u18_get_memory_record_by_id",
+        "ext_u18_get_memory_record_value", "ext_u18_set_memory_record_value",
+        "ext_u18_get_address_list", "ext_u18_delete_memory_record",
+    ]
+    _ext_u19_keys = [
+        "ext_u19_create_structure", "ext_u19_add_element_to_structure",
+        "ext_u19_get_structure_elements", "ext_u19_get_structure_by_name",
+        "ext_u19_export_structure_to_xml", "ext_u19_delete_structure",
     ]
     _ext_u20a_keys = [
         "ext_u20a_file_exists_true", "ext_u20a_file_exists_false", "ext_u20a_read_clipboard",
+        "ext_u20a_get_directory_list_temp", "ext_u20a_get_file_list_temp",
+        "ext_u20a_write_clipboard", "ext_u20a_read_clipboard_roundtrip",
+        "ext_u20a_delete_file_nonexistent", "ext_u20a_get_file_version_kernel32",
     ]
     _ext_u21_keys = [
-        "ext_u21_dbk_get_cr0", "ext_u21_dbk_get_cr3",
+        "ext_u21_dbk_get_cr0", "ext_u21_dbk_get_cr3", "ext_u21_dbk_get_cr4",
+        "ext_u21_dbk_writes_ignore_wp_off",
     ]
     _ext_u22_keys = [
         "ext_u22_in_main_thread", "ext_u22_set_global_variable", "ext_u22_get_global_variable",
+        "ext_u22_check_synchronize", "ext_u22_queue_to_main_thread",
     ]
     _ext_u23_keys = [
         "ext_u23_output_debug_string", "ext_u23_set_progress_state",
+        "ext_u23_set_progress_value",
     ]
 
     # =========================================================================
@@ -2040,6 +2581,8 @@ def main():
         "Ext Unit-15":   _ext_u15_keys,
         "Ext Unit-16":   _ext_u16_keys,
         "Ext Unit-17":   _ext_u17_keys,
+        "Ext Unit-18":   _ext_u18_keys,
+        "Ext Unit-19":   _ext_u19_keys,
         "Ext Unit-20a":  _ext_u20a_keys,
         "Ext Unit-21":   _ext_u21_keys,
         "Ext Unit-22":   _ext_u22_keys,
