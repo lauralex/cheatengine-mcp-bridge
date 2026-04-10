@@ -489,6 +489,90 @@ def ping() -> str:
     """Check connectivity and get version info."""
     return format_result(ce_client.send_command("ping"))
 
+# >>> BEGIN UNIT-19 Structure Management <<<
+
+@mcp.tool()
+def create_structure(name: str) -> str:
+    """Create a new empty CE structure definition and add it to the global list.
+
+    Args:
+        name: The name for the new structure.
+
+    Returns JSON with: success, structure_id.
+    """
+    return format_result(ce_client.send_command("create_structure", {"name": name}))
+
+
+@mcp.tool()
+def get_structure_by_name(name: str) -> str:
+    """Find a CE structure by name in the global structure list.
+
+    Args:
+        name: The structure name to search for.
+
+    Returns JSON with: success, structure_id, name, element_count, size.
+    """
+    return format_result(ce_client.send_command("get_structure_by_name", {"name": name}))
+
+
+@mcp.tool()
+def add_element_to_structure(structure_id: int, name: str, offset: int, type: str) -> str:
+    """Add a new element to an existing CE structure.
+
+    Args:
+        structure_id: The structure ID returned by create_structure or get_structure_by_name.
+        name: The element name.
+        offset: The byte offset of the element within the structure.
+        type: The variable type. Accepted values: byte, word, dword, qword,
+              float, single, double, string, aob, bytearray, pointer.
+
+    Returns JSON with: success, element_index.
+    """
+    return format_result(ce_client.send_command("add_element_to_structure", {
+        "structure_id": structure_id,
+        "name": name,
+        "offset": offset,
+        "type": type,
+    }))
+
+
+@mcp.tool()
+def get_structure_elements(structure_id: int) -> str:
+    """Get all elements of a CE structure.
+
+    Args:
+        structure_id: The structure ID.
+
+    Returns JSON with: success, structure_id, elements (list of {name, offset, type, size}).
+    """
+    return format_result(ce_client.send_command("get_structure_elements", {"structure_id": structure_id}))
+
+
+@mcp.tool()
+def export_structure_to_xml(structure_id: int) -> str:
+    """Export a CE structure definition as XML.
+
+    Args:
+        structure_id: The structure ID.
+
+    Returns JSON with: success, xml (XML string representation of the structure).
+    """
+    return format_result(ce_client.send_command("export_structure_to_xml", {"structure_id": structure_id}))
+
+
+@mcp.tool()
+def delete_structure(structure_id: int) -> str:
+    """Delete a CE structure from the global list and free it.
+
+    Args:
+        structure_id: The structure ID to delete.
+
+    Returns JSON with: success.
+    """
+    return format_result(ce_client.send_command("delete_structure", {"structure_id": structure_id}))
+
+# >>> END UNIT-19 <<<
+
 if __name__ == "__main__":
     try:
         debug_log("Starting FastMCP server (v11/v99 compatible)...")
