@@ -489,6 +489,66 @@ def ping() -> str:
     """Check connectivity and get version info."""
     return format_result(ce_client.send_command("ping"))
 
+# --- THREADING & SYNCHRONIZATION (Unit-22) ---
+
+@mcp.tool()
+def create_thread(code: str, arg: str = "") -> str:
+    """Execute Lua code in a new CE thread.
+
+    SECURITY WARNING: This tool executes arbitrary Lua code inside CE's process,
+    carrying the same risk as evaluate_lua. Only use with trusted code.
+
+    Returns {success, thread_id}.
+    """
+    return format_result(ce_client.send_command("create_thread", {"code": code, "arg": arg}))
+
+@mcp.tool()
+def get_global_variable(name: str) -> str:
+    """Read a global variable from CE's main Lua state.
+
+    Useful for reading values set by scripts running in other threads.
+    Returns {success, value} where value is stringified via tostring().
+    """
+    return format_result(ce_client.send_command("get_global_variable", {"name": name}))
+
+@mcp.tool()
+def set_global_variable(name: str, value: str) -> str:
+    """Write a global variable in CE's main Lua state.
+
+    Useful for passing values to scripts running in other threads.
+    Returns {success}.
+    """
+    return format_result(ce_client.send_command("set_global_variable", {"name": name, "value": value}))
+
+@mcp.tool()
+def queue_to_main_thread(code: str) -> str:
+    """Queue Lua code to run on CE's main thread without waiting for its result.
+
+    SECURITY WARNING: This tool executes arbitrary Lua code inside CE's process
+    on the main thread, carrying the same risk as evaluate_lua. Only use with
+    trusted code.
+
+    Returns {success}.
+    """
+    return format_result(ce_client.send_command("queue_to_main_thread", {"code": code}))
+
+@mcp.tool()
+def check_synchronize() -> str:
+    """Process queued main-thread calls (checkSynchronize).
+
+    Call this from an infinite loop in the main thread when using threading
+    and synchronize calls. Returns {success}.
+    """
+    return format_result(ce_client.send_command("check_synchronize"))
+
+@mcp.tool()
+def in_main_thread() -> str:
+    """Check whether the current code is running in CE's main thread.
+
+    Returns {success, is_main_thread}.
+    """
+    return format_result(ce_client.send_command("in_main_thread"))
+
 if __name__ == "__main__":
     try:
         debug_log("Starting FastMCP server (v11/v99 compatible)...")
