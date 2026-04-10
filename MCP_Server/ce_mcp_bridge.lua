@@ -3750,7 +3750,8 @@ local function cmd_md5_memory(params)
         return { success = false, error = "md5memory failed: " .. tostring(result) }
     end
 
-    return { success = true, md5 = tostring(result) }
+    -- Return key matches cmd_checksum_memory for consistency across the v12 surface.
+    return { success = true, md5_hash = tostring(result) }
 end
 
 local function cmd_md5_file(params)
@@ -3764,7 +3765,7 @@ local function cmd_md5_file(params)
         return { success = false, error = "md5file failed: " .. tostring(result) }
     end
 
-    return { success = true, md5 = tostring(result) }
+    return { success = true, md5_hash = tostring(result) }
 end
 
 local function cmd_create_section(params)
