@@ -32,20 +32,16 @@ local serverState = {
 
 local function toHex(num)
     if not num then return "nil" end
-    -- Handle both 32-bit and 64-bit addresses correctly
-    -- Lua numbers are doubles, so we need to handle large integers carefully
-    if num < 0 then
-        -- Handle negative numbers (signed interpretation)
-        return string.format("-0x%X", -num)
-    elseif num > 0xFFFFFFFF then
-        -- 64-bit address: use proper formatting
-        local high = math.floor(num / 0x100000000)
-        local low = num % 0x100000000
-        return string.format("0x%X%08X", high, low)
-    else
-        -- 32-bit address
+    if num >= 0 and num <= 0xFFFFFFFF then
         return string.format("0x%08X", num)
+    else
+        return string.format("0x%X", num)
     end
+end
+
+local function toHexLow32(num)
+    if not num then return nil end
+    return num & 0xFFFFFFFF
 end
 
 local function log(msg)
@@ -1307,7 +1303,7 @@ local function cmd_evaluate_lua(params)
     local code = params.code
     if not code then return { success = false, error = "No code provided" } end
     
-    local fn, err = loadstring(code)
+    local fn, err = load(code, "mcp_evaluate_lua", "t")
     if not fn then return { success = false, error = "Compile error: " .. tostring(err) } end
     
     local ok, result = pcall(fn)
@@ -1955,17 +1951,17 @@ local function cmd_poll_dbvm_watch(params)
             local hitData = {
                 hit_number = i,
                 -- 32-bit game uses ESP, 64-bit uses RSP
-                ESP = entry.RSP and (entry.RSP % 0x100000000) or nil,  -- Lower 32 bits for 32-bit game
+                ESP = entry.RSP and toHexLow32(entry.RSP) or nil,
                 RSP = entry.RSP and toHex(entry.RSP) or nil,
-                EIP = entry.RIP and (entry.RIP % 0x100000000) or nil,  -- Lower 32 bits
+                EIP = entry.RIP and toHexLow32(entry.RIP) or nil,
                 RIP = entry.RIP and toHex(entry.RIP) or nil,
                 -- Include key registers that might hold packet buffer
-                EAX = entry.RAX and (entry.RAX % 0x100000000) or nil,
-                ECX = entry.RCX and (entry.RCX % 0x100000000) or nil,
-                EDX = entry.RDX and (entry.RDX % 0x100000000) or nil,
-                EBX = entry.RBX and (entry.RBX % 0x100000000) or nil,
-                ESI = entry.RSI and (entry.RSI % 0x100000000) or nil,
-                EDI = entry.RDI and (entry.RDI % 0x100000000) or nil,
+                EAX = entry.RAX and toHexLow32(entry.RAX) or nil,
+                ECX = entry.RCX and toHexLow32(entry.RCX) or nil,
+                EDX = entry.RDX and toHexLow32(entry.RDX) or nil,
+                EBX = entry.RBX and toHexLow32(entry.RBX) or nil,
+                ESI = entry.RSI and toHexLow32(entry.RSI) or nil,
+                EDI = entry.RDI and toHexLow32(entry.RDI) or nil,
             }
             table.insert(results, hitData)
         end
