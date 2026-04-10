@@ -228,7 +228,8 @@ And many more at `AI_Context/MCP_Bridge_Command_Reference.md`
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `CE_MCP_TIMEOUT` | `30` | Timeout (seconds) for each MCP tool call. |
+| `CE_MCP_TIMEOUT` | `300` | Timeout (seconds) for each MCP tool call. Default is 5 minutes so long-running CE operations (auto-assemble compilation, full module scans, symbol reloads) don't trip the deadline. |
+| `CE_MCP_CONNECT_WAIT_MS` | `10000` | Milliseconds `connect()` will wait for the Named Pipe to become available. Covers CE script reloads (the Lua worker recycles its pipe with a 50 ms sleep) and startup races where the MCP server wins the boot order. |
 | `CE_MCP_ALLOW_SHELL` | *unset* | Set to `1` to enable `run_command` / `shell_execute` tools. **Arbitrary code execution risk** — leave unset by default. |
 
 ---

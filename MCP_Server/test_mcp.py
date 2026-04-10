@@ -1074,7 +1074,7 @@ def main():
         # First do a scan_all with a common dword value (1) so we have a baseline.
         all_tests["u24_scan_for_nextscan"] = TestCase(
             "Unit-24 scan_all baseline (value=1, dword)", "scan_all",
-            params={"value": "1", "type": "exact"},
+            params={"value": "1", "type": "dword"},
             validators=[
                 has_field("success", bool),
                 field_equals("success", True),
@@ -1689,8 +1689,16 @@ def main():
         _add("ext_u13_auto_assemble_check_valid",
              "Unit-13: auto_assemble_check on a valid script",
              "auto_assemble_check",
-             params={"script": "alloc(mcp_test_check_v12,4)"},
-             validators=[has_field("success", bool)])
+             # globalalloc(name, size) is a top-level Auto Assembler directive that
+             # parses cleanly without an [ENABLE] block. alloc(...) is only legal
+             # inside code blocks and would make the validator a silent no-op.
+             params={"script": "globalalloc(mcp_test_check_v12,4)\n"},
+             validators=[
+                 has_field("success", bool),
+                 field_equals("success", True),
+                 has_field("valid", bool),
+                 field_equals("valid", True),
+             ])
 
         # ---------- Unit 14: Memory operations (safe on scratch) ----------
         _add("ext_u14_md5_memory",
@@ -1721,6 +1729,30 @@ def main():
                          has_field("equal", bool), field_equals("equal", True)],
              skip_reason=_cascaded_skip("ext_u14_copy_memory", _write_skip,
                                         "copy_memory failed"))
+
+        # create_section → map_view_of_section roundtrip — exercises the recent
+        # param-shape fix (handle/address only, no vestigial size). The mapped
+        # view stays alive until script reload; cleanupZombieState releases it.
+        _add("ext_u14_create_section_and_map_view",
+             "Unit-14: create_section + map_view_of_section (roundtrip)",
+             "create_section",
+             params={"size": 4096},
+             validators=[has_field("success", bool), field_equals("success", True),
+                         field_is_hex_address("handle")],
+             skip_reason=None if _proc_ok else "No process attached")
+        _section_handle = None
+        if all_tests.get("ext_u14_create_section_and_map_view"):
+            _scr = all_tests["ext_u14_create_section_and_map_view"]
+            if _scr.result == TestResult.PASSED and isinstance(_scr.response, dict):
+                _section_handle = _scr.response.get("handle")
+        _add("ext_u14_map_view_of_section",
+             "Unit-14: map_view_of_section (no vestigial size param)",
+             "map_view_of_section",
+             params={"handle": _section_handle or "0x0"},
+             validators=[has_field("success", bool), field_equals("success", True),
+                         field_is_hex_address("mapped_address")],
+             skip_reason=_cascaded_skip("ext_u14_create_section_and_map_view",
+                                        None, "create_section failed"))
 
         # ---------- Unit 15: Advanced scanning ----------
         # aob_scan_unique with a very common pattern is expected to fail
@@ -1941,6 +1973,7 @@ def main():
     ]
     _ext_u14_keys = [
         "ext_u14_md5_memory", "ext_u14_copy_memory", "ext_u14_compare_memory_equal",
+        "ext_u14_create_section_and_map_view", "ext_u14_map_view_of_section",
     ]
     _ext_u15_keys = [
         "ext_u15_aob_scan_unique", "ext_u15_create_persistent_scan",

@@ -316,11 +316,45 @@ local function cleanupZombieState()
         mappedMemoryMDL[key] = nil
     end
 
+    -- 5. Cleanup persistent scans (Unit 15) — createMemScan / createFoundList objects
+    -- accumulated across multiple persistent_scan_* calls. Without this, script
+    -- reload orphans every MemScan instance in CE's memory.
+    if serverState.persistent_scans then
+        for name, entry in pairs(serverState.persistent_scans) do
+            if entry then
+                if entry.fl then pcall(function() entry.fl.destroy() end) end
+                if entry.ms then pcall(function() entry.ms.destroy() end) end
+                cleaned.scans = cleaned.scans + 1
+            end
+        end
+    end
+
+    -- 6. Cleanup Unit-19 structures (createStructure handles stored in serverState.structures)
+    if serverState.structures then
+        for id, structure in pairs(serverState.structures) do
+            if structure then
+                pcall(function() structure:destroy() end)
+            end
+        end
+    end
+
+    -- 7. Cleanup Unit-14 section handles (createSection return values)
+    if serverState.sections then
+        for id, handle in pairs(serverState.sections) do
+            if handle then
+                pcall(function() closeHandle(handle) end)
+            end
+        end
+    end
+
     -- Reset all tracking tables
     serverState.breakpoints = {}
     serverState.breakpoint_hits = {}
     serverState.hw_bp_slots = {}
     serverState.active_watches = {}
+    serverState.persistent_scans = {}
+    serverState.structures = {}
+    serverState.sections = {}
 
     if mdl_cleaned > 0 then
         log(string.format("Released %d leaked mapMemory MDL handle(s)", mdl_cleaned))
@@ -561,7 +595,7 @@ local function cmd_get_process_info(params)
             used_aob_fallback = usedAobFallback
         }
     end
-    return { success = false, error = "No process attached" }
+    return { success = false, error = "No process attached", error_code = "NO_PROCESS" }
 end
 
 local function cmd_enum_modules(params)
@@ -780,31 +814,40 @@ end
 local function cmd_read_pointer(params)
     local base = params.base or params.address
     local offsets = params.offsets or {}
-    
+
     if type(base) == "string" then base = getAddressSafe(base) end
-    if not base then return { success = false, error = "Invalid base address" } end
-    
+    if not base then
+        return { success = false, error = "Invalid base address", error_code = "INVALID_ADDRESS" }
+    end
+
     local currentAddr = base
     local path = { toHex(base) }
-    
+
     for i, offset in ipairs(offsets) do
         -- Use readPointer for 32/64-bit compatibility (readInteger on 32-bit, readQword on 64-bit)
-        local ptr = readPointer(currentAddr)
-        if not ptr then
-            return { success = false, error = "Failed to read pointer at " .. toHex(currentAddr), path = path }
+        local ok, ptr = pcall(readPointer, currentAddr)
+        if not ok or not ptr then
+            return {
+                success = false,
+                error = "Failed to read pointer at " .. toHex(currentAddr),
+                error_code = "NOT_FOUND",
+                path = path,
+            }
         end
         currentAddr = ptr + offset
         table.insert(path, toHex(currentAddr))
     end
-    
-    -- Read final value using readPointer for 32/64-bit compatibility
-    local finalValue = readPointer(currentAddr)
-    return { 
-        success = true, 
-        base = toHex(base), 
-        final_address = toHex(currentAddr), 
-        value = finalValue, 
-        path = path 
+
+    -- Read final value using readPointer for 32/64-bit compatibility.
+    -- Value is an address-shaped integer, so emit it as a hex string to match
+    -- the v12 address-encoding convention.
+    local ok, finalValue = pcall(readPointer, currentAddr)
+    return {
+        success = true,
+        base = toHex(base),
+        final_address = toHex(currentAddr),
+        value = (ok and finalValue) and toHex(finalValue) or nil,
+        path = path
     }
 end
 
@@ -1133,21 +1176,24 @@ end
 
 local function cmd_analyze_function(params)
     local addr = params.address
-    
+
     if type(addr) == "string" then addr = getAddressSafe(addr) end
-    if not addr then return { success = false, error = "Invalid address" } end
-    
+    if not addr then
+        return { success = false, error = "Invalid address", error_code = "INVALID_ADDRESS" }
+    end
+
     local is64 = targetIs64Bit()
 
     local funcStart, prologueType = findFunctionPrologue(addr, 4096)
 
-    if not funcStart then 
-        return { 
-            success = false, 
+    if not funcStart then
+        return {
+            success = false,
             error = "Could not find function start",
+            error_code = "NOT_FOUND",
             arch = is64 and "x64" or "x86",
             query_address = toHex(addr)
-        } 
+        }
     end
     
     -- Analyze calls within function
@@ -1183,10 +1229,10 @@ local function cmd_analyze_function(params)
         if b1 == 0xFF then
             local b2 = readBytes(currentAddr + 1, 1, false)
             if b2 and (b2 >= 0x10 and b2 <= 0x1F) then  -- ModR/M for /2
-                local disasm = disassemble(currentAddr)
+                local ok, disasm = pcall(disassemble, currentAddr)
                 table.insert(calls, {
                     call_site = toHex(currentAddr),
-                    instruction = disasm,
+                    instruction = ok and disasm or "<unavailable>",
                     type = "indirect"
                 })
             end
@@ -1316,9 +1362,11 @@ local function cmd_set_breakpoint(params)
     local captureRegs = params.capture_registers ~= false
     local captureStackFlag = params.capture_stack or false
     local stackDepth = params.stack_depth or 16
-    
+
     if type(addr) == "string" then addr = getAddressSafe(addr) end
-    if not addr then return { success = false, error = "Invalid address" } end
+    if not addr then
+        return { success = false, error = "Invalid address", error_code = "INVALID_ADDRESS" }
+    end
 
     bpId = bpId or tostring(addr)
     -- Avoid collision if an existing breakpoint has the same ID
@@ -1340,37 +1388,50 @@ local function cmd_set_breakpoint(params)
     end
 
     if not slot then
-        return { success = false, error = "No free hardware breakpoint slots (max 4 debug registers)" }
+        return {
+            success = false,
+            error = "No free hardware breakpoint slots (max 4 debug registers)",
+            error_code = "OUT_OF_RESOURCES",
+        }
     end
 
     -- Remove existing breakpoint at this address
     pcall(function() debug_removeBreakpoint(addr) end)
 
     serverState.breakpoint_hits[bpId] = {}
-    
+
     -- CRITICAL: Use bpmDebugRegister for hardware breakpoints (anti-cheat safe)
     -- Signature: debug_setBreakpoint(address, size, trigger, breakpointmethod, function)
-    debug_setBreakpoint(addr, 1, bptExecute, bpmDebugRegister, function()
+    local ok, err = pcall(debug_setBreakpoint, addr, 1, bptExecute, bpmDebugRegister, function()
         local hitData = {
             id = bpId,
             address = toHex(addr),
             timestamp = os.time(),
             breakpoint_type = "hardware_execute"
         }
-        
+
         if captureRegs then
             hitData.registers = captureRegisters()
         end
-        
+
         if captureStackFlag then
             hitData.stack = captureStack(stackDepth)
         end
-        
+
         table.insert(serverState.breakpoint_hits[bpId], hitData)
         debug_continueFromBreakpoint(co_run)
         return 1
     end)
-    
+
+    if not ok then
+        serverState.breakpoint_hits[bpId] = nil
+        return {
+            success = false,
+            error = "debug_setBreakpoint failed: " .. tostring(err),
+            error_code = "CE_API_UNAVAILABLE",
+        }
+    end
+
     serverState.hw_bp_slots[slot] = { id = bpId, address = addr }
     serverState.breakpoints[bpId] = { address = addr, slot = slot, type = "execute" }
     return { success = true, id = bpId, address = toHex(addr), slot = slot, method = "hardware_debug_register" }
@@ -1381,9 +1442,11 @@ local function cmd_set_data_breakpoint(params)
     local bpId = params.id
     local accessType = params.access_type or "w"  -- r, w, rw
     local size = params.size or 4
-    
+
     if type(addr) == "string" then addr = getAddressSafe(addr) end
-    if not addr then return { success = false, error = "Invalid address" } end
+    if not addr then
+        return { success = false, error = "Invalid address", error_code = "INVALID_ADDRESS" }
+    end
 
     bpId = bpId or tostring(addr)
     -- Avoid collision if an existing breakpoint has the same ID
@@ -1405,18 +1468,22 @@ local function cmd_set_data_breakpoint(params)
     end
 
     if not slot then
-        return { success = false, error = "No free hardware breakpoint slots (max 4 debug registers)" }
+        return {
+            success = false,
+            error = "No free hardware breakpoint slots (max 4 debug registers)",
+            error_code = "OUT_OF_RESOURCES",
+        }
     end
 
     local bpType = bptWrite
     if accessType == "r" then bpType = bptAccess
     elseif accessType == "rw" then bpType = bptAccess end
-    
+
     serverState.breakpoint_hits[bpId] = {}
-    
+
     -- CRITICAL: Use bpmDebugRegister for hardware breakpoints (anti-cheat safe)
     -- Signature: debug_setBreakpoint(address, size, trigger, breakpointmethod, function)
-    debug_setBreakpoint(addr, size, bpType, bpmDebugRegister, function()
+    local ok, err = pcall(debug_setBreakpoint, addr, size, bpType, bpmDebugRegister, function()
         local arch = getArchInfo()
         local instPtr = arch.instPtr
         local hitData = {
@@ -1430,15 +1497,24 @@ local function cmd_set_data_breakpoint(params)
             instruction = instPtr and disassemble(instPtr) or "???",
             arch = arch.is64bit and "x64" or "x86"
         }
-        
+
         table.insert(serverState.breakpoint_hits[bpId], hitData)
         debug_continueFromBreakpoint(co_run)
         return 1
     end)
-    
+
+    if not ok then
+        serverState.breakpoint_hits[bpId] = nil
+        return {
+            success = false,
+            error = "debug_setBreakpoint failed: " .. tostring(err),
+            error_code = "CE_API_UNAVAILABLE",
+        }
+    end
+
     serverState.hw_bp_slots[slot] = { id = bpId, address = addr }
     serverState.breakpoints[bpId] = { address = addr, slot = slot, type = "data" }
-    
+
     return { success = true, id = bpId, address = toHex(addr), slot = slot, access_type = accessType, method = "hardware_debug_register" }
 end
 
@@ -1640,29 +1716,31 @@ end
 local function cmd_dissect_structure(params)
     local address = params.address
     local size = params.size or 256
-    
+
     if type(address) == "string" then address = getAddressSafe(address) end
-    if not address then return { success = false, error = "Invalid address" } end
-    
+    if not address then
+        return { success = false, error = "Invalid address", error_code = "INVALID_ADDRESS" }
+    end
+
     -- Create a temporary structure and use autoGuess
     local ok, struct = pcall(createStructure, "MCP_TempStruct")
     if not ok or not struct then
-        return { success = false, error = "Failed to create structure" }
+        return { success = false, error = "Failed to create structure: " .. tostring(struct), error_code = "CE_API_UNAVAILABLE" }
     end
-    
+
     -- Use the Structure class autoGuess method
     pcall(function() struct:autoGuess(address, 0, size) end)
-    
+
     local elements = {}
     local count = struct.Count or 0
-    
+
     for i = 0, count - 1 do
         local elem = struct.Element[i]
         if elem then
             local val = nil
             -- Try to get current value
             pcall(function() val = elem:getValue(address) end)
-            
+
             table.insert(elements, {
                 offset = elem.Offset,
                 hex_offset = string.format("+0x%X", elem.Offset),
@@ -1673,10 +1751,12 @@ local function cmd_dissect_structure(params)
             })
         end
     end
-    
-    -- Cleanup - don't add to global list
+
+    -- Release: hide from GUI and destroy to reclaim the CE structure object.
+    -- Skipping :destroy() leaks a CE structure on every invocation.
     pcall(function() struct:removeFromGlobalStructureList() end)
-    
+    pcall(function() struct:destroy() end)
+
     return {
         success = true,
         base_address = toHex(address),
@@ -1688,15 +1768,36 @@ end
 
 -- Get Thread List: Returns all threads in the attached process
 local function cmd_get_thread_list(params)
-    local list = createStringlist()
-    getThreadlist(list)
+    local pid = getOpenedProcessID()
+    if not pid or pid == 0 then
+        return { success = false, error = "No process attached", error_code = "NO_PROCESS" }
+    end
+
+    local list_ok, list = pcall(createStringlist)
+    if not list_ok or not list then
+        return {
+            success = false,
+            error = "createStringlist failed: " .. tostring(list),
+            error_code = "CE_API_UNAVAILABLE",
+        }
+    end
+
+    local ok, err = pcall(getThreadlist, list)
+    if not ok then
+        pcall(function() list.destroy() end)
+        return {
+            success = false,
+            error = "getThreadlist failed: " .. tostring(err),
+            error_code = "CE_API_UNAVAILABLE",
+        }
+    end
 
     local allThreads = {}
-    for i = 0, list.Count - 1 do
+    for i = 0, (list.Count or 0) - 1 do
         local idHex = list[i]
         allThreads[#allThreads + 1] = { id_hex = idHex, id_int = tonumber(idHex, 16) }
     end
-    list.destroy()
+    pcall(function() list.destroy() end)
 
     local limit, offset, page, total = paginate(params, allThreads, 100)
     return { success = true, total = total, offset = offset, limit = limit, returned = #page, threads = page }
@@ -1706,18 +1807,39 @@ end
 local function cmd_auto_assemble(params)
     local script = params.script or params.code
     local disable = params.disable or false
-    
-    if not script then return { success = false, error = "No script provided" } end
-    
-    local success, disableInfo = autoAssemble(script)
-    
+
+    if not script then
+        return { success = false, error = "No script provided", error_code = "INVALID_PARAMS" }
+    end
+
+    -- CE's autoAssemble(text, disableInfo OPTIONAL): when disableInfo is a table,
+    -- the [DISABLE] section runs instead of [ENABLE]. An empty table is enough to
+    -- flip the branch; there's no persisted alloc state to reverse for a script
+    -- executed only from MCP, so callers using disable=true are expected to have
+    -- their own deallocation markers inside the script.
+    local ok, success, disableInfo
+    if disable then
+        ok, success, disableInfo = pcall(autoAssemble, script, {})
+    else
+        ok, success, disableInfo = pcall(autoAssemble, script)
+    end
+
+    if not ok then
+        return {
+            success = false,
+            error = "AutoAssemble threw: " .. tostring(success),
+            error_code = "CE_API_UNAVAILABLE",
+        }
+    end
+
     if success then
         local result = {
             success = true,
-            executed = true
+            executed = true,
+            section = disable and "disable" or "enable",
         }
         -- If disable info is returned, include symbol addresses
-        if disableInfo and disableInfo.symbols then
+        if disableInfo and type(disableInfo) == "table" and disableInfo.symbols then
             result.symbols = {}
             for name, addr in pairs(disableInfo.symbols) do
                 result.symbols[name] = toHex(addr)
@@ -1727,7 +1849,8 @@ local function cmd_auto_assemble(params)
     else
         return {
             success = false,
-            error = "AutoAssemble failed: " .. tostring(disableInfo)
+            error = "AutoAssemble failed: " .. tostring(disableInfo),
+            error_code = "INVALID_PARAMS",
         }
     end
 end
@@ -1776,25 +1899,28 @@ end
 local function cmd_read_pointer_chain(params)
     local base = params.base
     local offsets = params.offsets or {}
-    
+
     if type(base) == "string" then base = getAddressSafe(base) end
-    if not base then return { success = false, error = "Invalid base address" } end
-    
+    if not base then
+        return { success = false, error = "Invalid base address", error_code = "INVALID_ADDRESS" }
+    end
+
     local currentAddr = base
     local chain = { { step = 0, address = toHex(currentAddr), description = "base" } }
-    
+
     for i, offset in ipairs(offsets) do
         -- Read pointer at current address
-        local ptr = readPointer(currentAddr)
-        if not ptr then
+        local ok, ptr = pcall(readPointer, currentAddr)
+        if not ok or not ptr then
             return {
                 success = false,
                 error = "Failed to read pointer at step " .. i,
+                error_code = "NOT_FOUND",
                 partial_chain = chain,
-                failed_at_address = toHex(currentAddr)
+                failed_at_address = toHex(currentAddr),
             }
         end
-        
+
         -- Apply offset
         currentAddr = ptr + offset
         table.insert(chain, {
@@ -1805,19 +1931,20 @@ local function cmd_read_pointer_chain(params)
             pointer_value = toHex(ptr)
         })
     end
-    
-    -- Try to read a value at the final address (using readPointer for 32/64-bit compatibility)
+
+    -- Try to read a value at the final address (using readPointer for 32/64-bit compatibility).
+    -- Emit as hex string to match the v12 address-encoding convention.
     local finalValue = nil
     pcall(function()
         finalValue = readPointer(currentAddr)
     end)
-    
+
     return {
         success = true,
         base = toHex(base),
         offsets = offsets,
         final_address = toHex(currentAddr),
-        final_value = finalValue,
+        final_value = finalValue and toHex(finalValue) or nil,
         chain = chain
     }
 end
@@ -2185,32 +2312,40 @@ end
 local function cmd_stop_dbvm_watch(params)
     local addr = params.address
     if type(addr) == "string" then addr = getAddressSafe(addr) end
-    if not addr then return { success = false, error = "Invalid address" } end
-    
+    if not addr then
+        return { success = false, error = "Invalid address", error_code = "INVALID_ADDRESS" }
+    end
+
     local watchKey = toHex(addr)
     local watchInfo = serverState.active_watches[watchKey]
-    
+
     if not watchInfo then
         return {
             success = false,
             virtual_address = toHex(addr),
-            error = "No active watch found for this address"
+            error = "No active watch found for this address",
+            error_code = "NOT_FOUND",
         }
     end
-    
+
     local watch_id = watchInfo.id
     local results = {}
-    
+
     -- 1. Retrieve the log of all memory accesses
     local okLog, log = pcall(dbvm_watch_retrievelog, watch_id)
-    
+
     if okLog and log then
         -- Parse each log entry (contains CPU context at time of access)
         for i, entry in ipairs(log) do
+            local disasm_text = "???"
+            if entry.RIP then
+                local okDis, dis = pcall(disassemble, entry.RIP)
+                if okDis and dis then disasm_text = dis end
+            end
             local hitData = {
                 hit_number = i,
                 instruction_address = entry.RIP and toHex(entry.RIP) or nil,
-                instruction = entry.RIP and (pcall(disassemble, entry.RIP) and disassemble(entry.RIP) or "???") or "???",
+                instruction = disasm_text,
                 -- CPU registers at time of access
                 registers = {
                     RAX = entry.RAX and toHex(entry.RAX) or nil,
@@ -2697,7 +2832,7 @@ local function requireProcess()
 end
 
 local function cmd_inject_dll(params)
-    if not requireProcess() then return { success = false, error = "No process attached" } end
+    if not requireProcess() then return { success = false, error = "No process attached", error_code = "NO_PROCESS" } end
     local filepath = params.filepath
     if not filepath then return { success = false, error = "No filepath provided" } end
     local skip = params.skip_symbol_reload or false
@@ -2710,7 +2845,7 @@ local function cmd_inject_dll(params)
 end
 
 local function cmd_inject_dotnet_dll(params)
-    if not requireProcess() then return { success = false, error = "No process attached" } end
+    if not requireProcess() then return { success = false, error = "No process attached", error_code = "NO_PROCESS" } end
     local dllpath    = params.filepath
     local className  = params.class_name
     local methodName = params.method_name
@@ -2730,7 +2865,7 @@ local function cmd_inject_dotnet_dll(params)
 end
 
 local function cmd_execute_code(params)
-    if not requireProcess() then return { success = false, error = "No process attached" } end
+    if not requireProcess() then return { success = false, error = "No process attached", error_code = "NO_PROCESS" } end
     local addr = params.address
     if type(addr) == "string" then addr = getAddressSafe(addr) end
     if not addr then return { success = false, error = "Invalid address" } end
@@ -2747,7 +2882,7 @@ local function cmd_execute_code(params)
 end
 
 local function cmd_execute_code_ex(params)
-    if not requireProcess() then return { success = false, error = "No process attached" } end
+    if not requireProcess() then return { success = false, error = "No process attached", error_code = "NO_PROCESS" } end
     local addr = params.address
     if type(addr) == "string" then addr = getAddressSafe(addr) end
     if not addr then return { success = false, error = "Invalid address" } end
@@ -2765,7 +2900,7 @@ local function cmd_execute_code_ex(params)
 end
 
 local function cmd_execute_method(params)
-    if not requireProcess() then return { success = false, error = "No process attached" } end
+    if not requireProcess() then return { success = false, error = "No process attached", error_code = "NO_PROCESS" } end
     local addr = params.address
     if type(addr) == "string" then addr = getAddressSafe(addr) end
     if not addr then return { success = false, error = "Invalid address" } end
@@ -2863,7 +2998,7 @@ local DEBUGGER_INTERFACE_CURRENT_NAME = {
 local function cmd_debug_process(params)
     local pid = getOpenedProcessID()
     if not pid or pid == 0 then
-        return { success = false, error = "No process attached" }
+        return { success = false, error = "No process attached", error_code = "NO_PROCESS" }
     end
     local iface = params.interface or 0
     if type(iface) ~= "number" then iface = tonumber(iface) or 0 end
@@ -2905,7 +3040,11 @@ end
 local function requireDebugger()
     local ok, isDbg = pcall(debug_isDebugging)
     if not ok or not isDbg then
-        return { success = false, error = "Debugger is not attached" }
+        return {
+            success = false,
+            error = "Debugger is not attached. Call debug_process() first.",
+            error_code = "CE_API_UNAVAILABLE",
+        }
     end
 end
 
@@ -2913,7 +3052,7 @@ end
 local function callWithProcessGuard(fn)
     local pid = getOpenedProcessID()
     if not pid or pid == 0 then
-        return { success = false, error = "No process attached" }
+        return { success = false, error = "No process attached", error_code = "NO_PROCESS" }
     end
     local ok, err = pcall(fn)
     if not ok then return { success = false, error = tostring(err) } end
@@ -2986,7 +3125,7 @@ local function u11_guard()
         return false, { success = false, error = "No process attached", error_code = "NO_PROCESS" }
     end
     if not debug_isDebugging() then
-        return false, { success = false, error = "Debugger not active. Call debugProcess() first.", error_code = "NO_DEBUGGER" }
+        return false, { success = false, error = "Debugger not active. Call debugProcess() first.", error_code = "CE_API_UNAVAILABLE" }
     end
     return true, nil
 end
@@ -3007,7 +3146,7 @@ local function cmd_debug_get_context(params)
 
     local callOk, callErr = pcall(debug_getContext, extraRegs)
     if not callOk then
-        return { success = false, error = "debug_getContext failed: " .. tostring(callErr), error_code = "CE_API_ERROR" }
+        return { success = false, error = "debug_getContext failed: " .. tostring(callErr), error_code = "CE_API_UNAVAILABLE" }
     end
 
     -- captureRegisters() reads the same CE globals that debug_getContext just populated
@@ -3070,7 +3209,7 @@ local function cmd_debug_set_context(params)
 
     local setOk, setErr = pcall(debug_setContext)
     if not setOk then
-        return { success = false, error = "debug_setContext failed: " .. tostring(setErr), error_code = "CE_API_ERROR" }
+        return { success = false, error = "debug_setContext failed: " .. tostring(setErr), error_code = "CE_API_UNAVAILABLE" }
     end
 
     return { success = true }
@@ -3084,7 +3223,7 @@ local function cmd_debug_get_xmm_pointer(params)
 
     local ptrOk, ptr = pcall(debug_getXMMPointer, xmmNr)
     if not ptrOk then
-        return { success = false, error = "debug_getXMMPointer failed: " .. tostring(ptr), error_code = "CE_API_ERROR" }
+        return { success = false, error = "debug_getXMMPointer failed: " .. tostring(ptr), error_code = "CE_API_UNAVAILABLE" }
     end
 
     return { success = true, xmm_nr = xmmNr, pointer = toHex(ptr) }
@@ -3109,7 +3248,7 @@ local function cmd_debug_set_last_branch_recording(params)
 
     local lbrOk, lbrErr = pcall(debug_setLastBranchRecording, enable)
     if not lbrOk then
-        return { success = false, error = "debug_setLastBranchRecording failed: " .. tostring(lbrErr), error_code = "CE_API_ERROR" }
+        return { success = false, error = "debug_setLastBranchRecording failed: " .. tostring(lbrErr), error_code = "CE_API_UNAVAILABLE" }
     end
 
     return { success = true, enabled = enable }
@@ -3123,11 +3262,11 @@ local function cmd_debug_get_last_branch_record(params)
 
     local recOk, record = pcall(debug_getLastBranchRecord, index)
     if not recOk then
-        return { success = false, error = "debug_getLastBranchRecord failed: " .. tostring(record), error_code = "CE_API_ERROR" }
+        return { success = false, error = "debug_getLastBranchRecord failed: " .. tostring(record), error_code = "CE_API_UNAVAILABLE" }
     end
 
     if type(record) ~= "table" then
-        return { success = false, error = "Unexpected return from debug_getLastBranchRecord: " .. tostring(record), error_code = "CE_API_ERROR" }
+        return { success = false, error = "Unexpected return from debug_getLastBranchRecord: " .. tostring(record), error_code = "CE_API_UNAVAILABLE" }
     end
 
     return {
@@ -3178,7 +3317,7 @@ local function cmd_debug_set_breakpoint_for_thread(params)
 
     if not setOk then
         serverState.breakpoint_hits[bpHandle] = nil
-        return { success = false, error = "debug_setBreakpointForThread failed: " .. tostring(setErr), error_code = "CE_API_ERROR" }
+        return { success = false, error = "debug_setBreakpointForThread failed: " .. tostring(setErr), error_code = "CE_API_UNAVAILABLE" }
     end
 
     serverState.breakpoints[bpHandle] = { address = addr, type = "thread_bp", thread_id = threadId }
@@ -3208,7 +3347,7 @@ local function cmd_debug_remove_breakpoint_for_thread(params)
     -- CE has no dedicated per-thread remove; debug_removeBreakpoint by address is the supported path
     local remOk, remErr = pcall(debug_removeBreakpoint, addr)
     if not remOk then
-        return { success = false, error = "debug_removeBreakpoint failed: " .. tostring(remErr), error_code = "CE_API_ERROR" }
+        return { success = false, error = "debug_removeBreakpoint failed: " .. tostring(remErr), error_code = "CE_API_UNAVAILABLE" }
     end
 
     local bpHandle = "thread_" .. tostring(threadId) .. "_" .. toHex(addr)
@@ -3626,7 +3765,7 @@ end
 
 local function cmd_copy_memory(params)
     local pid = getOpenedProcessID()
-    if not pid or pid == 0 then return { success = false, error = "No process attached" } end
+    if not pid or pid == 0 then return { success = false, error = "No process attached", error_code = "NO_PROCESS" } end
 
     local src = params.source
     local size = params.size
@@ -3656,7 +3795,7 @@ end
 
 local function cmd_compare_memory(params)
     local pid = getOpenedProcessID()
-    if not pid or pid == 0 then return { success = false, error = "No process attached" } end
+    if not pid or pid == 0 then return { success = false, error = "No process attached", error_code = "NO_PROCESS" } end
 
     local addr1 = params.addr1
     local addr2 = params.addr2
@@ -3686,7 +3825,7 @@ end
 
 local function cmd_write_region_to_file(params)
     local pid = getOpenedProcessID()
-    if not pid or pid == 0 then return { success = false, error = "No process attached" } end
+    if not pid or pid == 0 then return { success = false, error = "No process attached", error_code = "NO_PROCESS" } end
 
     local addr = params.address
     local size = params.size
@@ -3711,7 +3850,7 @@ end
 
 local function cmd_read_region_from_file(params)
     local pid = getOpenedProcessID()
-    if not pid or pid == 0 then return { success = false, error = "No process attached" } end
+    if not pid or pid == 0 then return { success = false, error = "No process attached", error_code = "NO_PROCESS" } end
 
     local filename = params.filename
     local destination = params.destination
@@ -3734,7 +3873,7 @@ end
 
 local function cmd_md5_memory(params)
     local pid = getOpenedProcessID()
-    if not pid or pid == 0 then return { success = false, error = "No process attached" } end
+    if not pid or pid == 0 then return { success = false, error = "No process attached", error_code = "NO_PROCESS" } end
 
     local addr = params.address
     local size = params.size
@@ -3770,22 +3909,32 @@ end
 
 local function cmd_create_section(params)
     local pid = getOpenedProcessID()
-    if not pid or pid == 0 then return { success = false, error = "No process attached" } end
+    if not pid or pid == 0 then return { success = false, error = "No process attached", error_code = "NO_PROCESS" } end
 
     local size = params.size
-    if not size or size <= 0 then return { success = false, error = "Missing or invalid size" } end
+    if not size or size <= 0 then
+        return { success = false, error = "Missing or invalid size", error_code = "INVALID_PARAMS" }
+    end
 
     local ok, handle = pcall(createSection, size)
     if not ok or not handle then
-        return { success = false, error = "createSection failed: " .. tostring(handle) }
+        return {
+            success = false,
+            error = "createSection failed: " .. tostring(handle),
+            error_code = "CE_API_UNAVAILABLE",
+        }
     end
+
+    -- Track handle so cleanupZombieState can release it on script reload.
+    serverState.sections = serverState.sections or {}
+    serverState.sections[toHex(handle)] = handle
 
     return { success = true, handle = toHex(handle) }
 end
 
 local function cmd_map_view_of_section(params)
     local pid = getOpenedProcessID()
-    if not pid or pid == 0 then return { success = false, error = "No process attached" } end
+    if not pid or pid == 0 then return { success = false, error = "No process attached", error_code = "NO_PROCESS" } end
 
     local handle = params.handle
     local address = params.address  -- optional preferred base
@@ -3828,18 +3977,6 @@ end
 end
 -- >>> END UNIT-14 <<<
 
-    -- 4. Cleanup persistent scans (Unit 15)
-    if serverState.persistent_scans then
-        for name, entry in pairs(serverState.persistent_scans) do
-            if entry then
-                if entry.fl then pcall(function() entry.fl.destroy() end) end
-                pcall(function() entry.ms.destroy() end)
-                cleaned.scans = cleaned.scans + 1
-            end
-        end
-    end
-
-    serverState.persistent_scans = {}
 -- >>> BEGIN UNIT-15 Advanced Scanning <<<
 do
 -- ============================================================================
@@ -3905,7 +4042,7 @@ local function cmd_aob_scan_unique(params)
         results = AOBScan(pattern, protection)
     end)
     if not scanOk then
-        return { success = false, error = "AOBScan failed: " .. tostring(scanMsg), error_code = "SCAN_ERROR" }
+        return { success = false, error = "AOBScan failed: " .. tostring(scanMsg), error_code = "INTERNAL_ERROR" }
     end
 
     local count = results and results.Count or 0
@@ -3957,7 +4094,7 @@ local function cmd_aob_scan_module(params)
     local results
     local scanOk, scanMsg = pcall(function() results = AOBScan(pattern, protection) end)
     if not scanOk then
-        return { success = false, error = "AOBScan failed: " .. tostring(scanMsg), error_code = "SCAN_ERROR" }
+        return { success = false, error = "AOBScan failed: " .. tostring(scanMsg), error_code = "INTERNAL_ERROR" }
     end
 
     local addresses = {}
@@ -4029,7 +4166,7 @@ local function cmd_pointer_rescan(params)
         return {
             success    = false,
             error      = "pointerRescan failed: " .. tostring(rescanMsg),
-            error_code = "SCAN_ERROR",
+            error_code = "INTERNAL_ERROR",
             note       = "A prior pointer scan must exist in CE before calling pointer_rescan"
         }
     end
@@ -4056,7 +4193,7 @@ local function cmd_create_persistent_scan(params)
     local ms
     local msOk, msMsg = pcall(function() ms = createMemScan() end)
     if not msOk or not ms then
-        return { success = false, error = "createMemScan failed: " .. tostring(msMsg), error_code = "SCAN_ERROR" }
+        return { success = false, error = "createMemScan failed: " .. tostring(msMsg), error_code = "INTERNAL_ERROR" }
     end
 
     serverState.persistent_scans[name] = {
@@ -4096,7 +4233,7 @@ local function cmd_persistent_scan_first_scan(params)
         ms.waitTillDone()
     end)
     if not fsOk then
-        return { success = false, error = "firstScan failed: " .. tostring(fsMsg), error_code = "SCAN_ERROR" }
+        return { success = false, error = "firstScan failed: " .. tostring(fsMsg), error_code = "INTERNAL_ERROR" }
     end
 
     if entry.fl then pcall(function() entry.fl.destroy() end) end
@@ -4106,7 +4243,7 @@ local function cmd_persistent_scan_first_scan(params)
         fl.initialize()
     end)
     if not flOk then
-        return { success = false, error = "createFoundList failed: " .. tostring(flMsg), error_code = "SCAN_ERROR" }
+        return { success = false, error = "createFoundList failed: " .. tostring(flMsg), error_code = "INTERNAL_ERROR" }
     end
 
     entry.fl       = fl
@@ -4145,7 +4282,7 @@ local function cmd_persistent_scan_next_scan(params)
         ms.waitTillDone()
     end)
     if not nsOk then
-        return { success = false, error = "nextScan failed: " .. tostring(nsMsg), error_code = "SCAN_ERROR" }
+        return { success = false, error = "nextScan failed: " .. tostring(nsMsg), error_code = "INTERNAL_ERROR" }
     end
 
     if entry.fl then pcall(function() entry.fl.destroy() end) end
@@ -4155,7 +4292,7 @@ local function cmd_persistent_scan_next_scan(params)
         fl.initialize()
     end)
     if not flOk then
-        return { success = false, error = "createFoundList failed: " .. tostring(flMsg), error_code = "SCAN_ERROR" }
+        return { success = false, error = "createFoundList failed: " .. tostring(flMsg), error_code = "INTERNAL_ERROR" }
     end
 
     entry.fl = fl
@@ -4257,7 +4394,11 @@ local function cmd_find_window(params)
     local class_name = params.class_name
 
     if not title and not class_name then
-        return { success = false, error = "At least one of title or class_name must be provided" }
+        return {
+            success = false,
+            error = "At least one of title or class_name must be provided",
+            error_code = "INVALID_PARAMS",
+        }
     end
 
     local ok, handle = pcall(function()
@@ -4265,11 +4406,11 @@ local function cmd_find_window(params)
     end)
 
     if not ok then
-        return { success = false, error = tostring(handle) }
+        return { success = false, error = tostring(handle), error_code = "CE_API_UNAVAILABLE" }
     end
 
     if not handle or handle == 0 then
-        return { success = false, error_code = "NOT_FOUND" }
+        return { success = false, error = "Window not found", error_code = "NOT_FOUND" }
     end
 
     return { success = true, handle = toHex(handle) }
@@ -5278,7 +5419,7 @@ end
 local function cmd_read_process_memory_cr3(params)
     local pid = getOpenedProcessID()
     if not pid or pid == 0 then
-        return { success = false, error = "No process attached" }
+        return { success = false, error = "No process attached", error_code = "NO_PROCESS" }
     end
 
     local cr3_str  = params.cr3
@@ -5307,7 +5448,7 @@ end
 local function cmd_write_process_memory_cr3(params)
     local pid = getOpenedProcessID()
     if not pid or pid == 0 then
-        return { success = false, error = "No process attached" }
+        return { success = false, error = "No process attached", error_code = "NO_PROCESS" }
     end
 
     local cr3_str  = params.cr3
@@ -5333,7 +5474,7 @@ end
 local function cmd_map_memory(params)
     local pid = getOpenedProcessID()
     if not pid or pid == 0 then
-        return { success = false, error = "No process attached" }
+        return { success = false, error = "No process attached", error_code = "NO_PROCESS" }
     end
 
     local addr_str = params.address
@@ -5363,7 +5504,7 @@ end
 local function cmd_unmap_memory(params)
     local pid = getOpenedProcessID()
     if not pid or pid == 0 then
-        return { success = false, error = "No process attached" }
+        return { success = false, error = "No process attached", error_code = "NO_PROCESS" }
     end
 
     local addr_str = params.mapped_address
@@ -5400,7 +5541,7 @@ end
 local function cmd_get_physical_address_cr3(params)
     local pid = getOpenedProcessID()
     if not pid or pid == 0 then
-        return { success = false, error = "No process attached" }
+        return { success = false, error = "No process attached", error_code = "NO_PROCESS" }
     end
 
     local cr3_str = params.cr3

@@ -3154,21 +3154,24 @@ The MCP bridge Python server (`mcp_cheatengine.py`) reads the following environm
 
 | Variable | Type | Default | Description |
 |----------|------|---------|-------------|
-| `CE_MCP_TIMEOUT` | int (ms) | 30000 | Timeout in milliseconds for pipe read/write operations. Increase for slow systems or large data transfers. |
-| `CE_MCP_ALLOW_SHELL` | int (0 or 1) | 0 | Set to `1` to enable shell execution tools (`run_command`, `shell_execute`). **Disabled by default for security.** |
+| `CE_MCP_TIMEOUT` | int (seconds) | `300` | Per-tool deadline in **seconds**. Default is 5 minutes to accommodate long-running CE operations (auto-assemble compilation, full module scans, symbol reloads). Increase further if you use `execute_code` with large `timeout` parameters. |
+| `CE_MCP_CONNECT_WAIT_MS` | int (ms) | `10000` | How long `connect()` will wait for the Named Pipe to become available before giving up. Covers script-reload windows (the Lua worker re-creates its pipe with a 50 ms sleep) and startup races where the MCP server launches before the Lua bridge. |
+| `CE_MCP_ALLOW_SHELL` | int (0 or 1) | `0` | Set to `1` to enable shell execution tools (`run_command`, `shell_execute`). **Disabled by default for security.** |
 
 **Setting environment variables:**
 
 Windows (Command Prompt):
 ```cmd
-set CE_MCP_TIMEOUT=60000
+set CE_MCP_TIMEOUT=600
+set CE_MCP_CONNECT_WAIT_MS=15000
 set CE_MCP_ALLOW_SHELL=0
 python mcp_cheatengine.py
 ```
 
 Windows (PowerShell):
 ```powershell
-$env:CE_MCP_TIMEOUT = "60000"
+$env:CE_MCP_TIMEOUT = "600"
+$env:CE_MCP_CONNECT_WAIT_MS = "15000"
 $env:CE_MCP_ALLOW_SHELL = "0"
 python mcp_cheatengine.py
 ```
@@ -3181,7 +3184,8 @@ Claude Desktop `claude_desktop_config.json`:
       "command": "python",
       "args": ["path/to/mcp_cheatengine.py"],
       "env": {
-        "CE_MCP_TIMEOUT": "60000",
+        "CE_MCP_TIMEOUT": "600",
+        "CE_MCP_CONNECT_WAIT_MS": "15000",
         "CE_MCP_ALLOW_SHELL": "0"
       }
     }

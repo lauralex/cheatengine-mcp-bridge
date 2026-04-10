@@ -71,7 +71,7 @@ Two files are the source of truth — there's no codegen, so you must edit both:
 - **Cheat Engine prerequisite**: CE → Settings → Extra → **disable "Query memory region routines"**. With it enabled, memory scans on DBVM-protected pages trigger `CLOCK_WATCHDOG_TIMEOUT` BSODs. This is documented as a hard requirement in both `README.md` and `AI_Context/AI_Guide_MCP_Server_Implementation.md`; don't weaken the assumption without testing.
 - **Pipe name** `\\.\pipe\CE_MCP_Bridge_v99` is hardcoded in both `mcp_cheatengine.py` (as `PIPE_NAME`) and `ce_mcp_bridge.lua` (as `PIPE_NAME`). Keep them in sync if you ever rename it. The `_v99` suffix is the wire-protocol version and is independent of the bridge version (`12.0.0`).
 - **Anti-cheat safety** (per `AI_Context/AI_Guide_MCP_Server_Implementation.md`): prefer hardware DR0–DR3 breakpoints over software (`0xCC`) breakpoints, and prefer DBVM watches for truly invisible tracing. The existing `cmd_set_breakpoint` already uses `debug_setBreakpoint` (hardware); keep new debugging tools on that path.
-- **Env vars:** `CE_MCP_TIMEOUT` (default 30s) limits per-tool latency; `CE_MCP_ALLOW_SHELL=1` enables `run_command` / `shell_execute` (default: disabled).
+- **Env vars:** `CE_MCP_TIMEOUT` (default 300s — 5 min, accommodates long-running CE operations like auto-assemble compilation and full scans), `CE_MCP_CONNECT_WAIT_MS` (default 10000 — how long `connect()` waits for the Named Pipe to reappear during CE script reloads or startup races), `CE_MCP_ALLOW_SHELL=1` enables `run_command` / `shell_execute` (default: disabled).
 
 ## Conventions (v12 overhaul)
 

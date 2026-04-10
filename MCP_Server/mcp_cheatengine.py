@@ -114,7 +114,16 @@ sys.stdout = _mcp_stdout
 # >>> BEGIN UNIT-06 Python client optimization <<<
 
 # Timeout (seconds) for pipe reads; override with CE_MCP_TIMEOUT env var.
-CE_MCP_TIMEOUT = int(os.environ.get("CE_MCP_TIMEOUT", "30"))
+# Default is 5 minutes to accommodate long-running CE operations like auto-assemble
+# compilation, full module scans, and symbol reloads. Interactive/fast commands are
+# unaffected because the deadline is only consulted after the blocking read returns.
+CE_MCP_TIMEOUT = int(os.environ.get("CE_MCP_TIMEOUT", "300"))
+
+# How long connect() will wait for the Named Pipe to become available before giving
+# up. Covers the window where Cheat Engine has torn down the pipe and is recreating
+# it (the worker thread sleeps 50ms between cycles), as well as cold-start races
+# where the MCP server wins the startup race against the Lua script.
+CE_MCP_CONNECT_WAIT_MS = int(os.environ.get("CE_MCP_CONNECT_WAIT_MS", "10000"))
 
 # Rate-limited debug_log: identical messages repeated >10× within 1 s are suppressed
 # until the next flush window, then emitted with a repeat count.
@@ -162,51 +171,120 @@ MCP_SERVER_NAME = "cheatengine"
 # PIPE CLIENT
 # ============================================================================
 
+# Windows winerror codes we handle explicitly when opening the pipe.
+_ERROR_FILE_NOT_FOUND = 2   # pipe doesn't exist (CE script not loaded yet, or tearing down)
+_ERROR_PIPE_BUSY = 231      # all pipe instances busy (another client connected)
+_ERROR_SEM_TIMEOUT = 121    # pipe semaphore timeout
+_ERROR_BROKEN_PIPE = 109    # pipe handle closed on the other side
+
+
 class CEBridgeClient:
     def __init__(self):
         self.handle = None
         self._last_used = None  # epoch seconds of last successful round-trip
 
-    def connect(self):
-        """Attempts to connect to the CE Named Pipe."""
-        try:
-            self.handle = win32file.CreateFile(
-                PIPE_NAME,
-                win32file.GENERIC_READ | win32file.GENERIC_WRITE,
-                0,
-                None,
-                win32file.OPEN_EXISTING,
-                0,
-                None
-            )
-            return True
-        except pywintypes.error as e:
-            # sys.stderr.write(f"[CEBridge] Connect Error: {e}\n")
-            return False
+    def connect(self, wait_timeout_ms=None):
+        """Open the CE Named Pipe, waiting for it to become available.
+
+        Handles the two common transient conditions:
+          * ERROR_FILE_NOT_FOUND — pipe doesn't exist yet (CE script loading, or the
+            Lua worker thread is sleeping between pipe.destroy() and the next
+            createPipe() call).
+          * ERROR_PIPE_BUSY — the pipe exists but all instances are already
+            connected. WaitNamedPipe blocks until an instance frees up or the
+            timeout expires.
+
+        Returns True on success, False if the deadline passed without a connection.
+        """
+        if wait_timeout_ms is None:
+            wait_timeout_ms = CE_MCP_CONNECT_WAIT_MS
+
+        deadline = time.time() + (wait_timeout_ms / 1000.0)
+        backoff = 0.05  # 50ms initial backoff, matches Lua worker's sleep window
+
+        while True:
+            try:
+                self.handle = win32file.CreateFile(
+                    PIPE_NAME,
+                    win32file.GENERIC_READ | win32file.GENERIC_WRITE,
+                    0,
+                    None,
+                    win32file.OPEN_EXISTING,
+                    0,
+                    None,
+                )
+                return True
+            except pywintypes.error as e:
+                winerr = getattr(e, "winerror", None)
+                remaining_ms = int((deadline - time.time()) * 1000)
+                if remaining_ms <= 0:
+                    debug_log(f"connect() deadline reached (winerror={winerr})")
+                    return False
+
+                if winerr == _ERROR_PIPE_BUSY:
+                    # Wait for an instance to free up.
+                    try:
+                        win32pipe.WaitNamedPipe(PIPE_NAME, min(remaining_ms, 5000))
+                    except pywintypes.error:
+                        time.sleep(min(backoff, remaining_ms / 1000.0))
+                        backoff = min(backoff * 2, 1.0)
+                    continue
+
+                if winerr == _ERROR_FILE_NOT_FOUND:
+                    # Pipe doesn't exist yet — poll with backoff.
+                    time.sleep(min(backoff, remaining_ms / 1000.0))
+                    backoff = min(backoff * 2, 1.0)
+                    continue
+
+                # Some other error — give up immediately so the caller can surface it.
+                debug_log(f"connect() unexpected error: {e}")
+                return False
 
     def send_command(self, method, params=None):
-        """Send command to CE Bridge with auto-reconnection on failure."""
-        max_retries = 2
+        """Send a JSON-RPC command to the Lua bridge.
+
+        Reliability features:
+          * `connect()` waits up to CE_MCP_CONNECT_WAIT_MS for the pipe to become
+            available, so transient disconnects (script reloads, worker cycling)
+            don't fail the call.
+          * The outer retry loop handles mid-transaction pipe failures by closing
+            the broken handle, reconnecting, and resending the request.
+          * The per-attempt deadline is derived from a fresh timestamp so connect
+            backoff doesn't steal from the caller's wall-clock budget unfairly.
+        """
+        max_retries = 3
         last_error = None
 
-        # Close handles that have been idle >5 min to avoid stale-pipe errors.
+        # Close handles that have been idle longer than the timeout window so we
+        # don't push a request into a stale connection.
         now = time.time()
         if self.handle is not None and self._last_used is not None:
-            if now - self._last_used > 300:
-                debug_log("Pipe idle >5 min — reconnecting.")
+            if now - self._last_used > CE_MCP_TIMEOUT:
+                debug_log(f"Pipe idle >{CE_MCP_TIMEOUT}s — reconnecting.")
                 self.close()
 
         for attempt in range(max_retries):
             if not self.handle:
                 if not self.connect():
-                    raise ConnectionError("Cheat Engine Bridge (v11/v99) is not running (Pipe not found).")
+                    last_error = ConnectionError(
+                        "Cheat Engine Bridge (v99) is not running — "
+                        "load ce_mcp_bridge.lua in Cheat Engine "
+                        "(File -> Execute Script) before issuing commands."
+                    )
+                    if attempt < max_retries - 1:
+                        time.sleep(0.25 * (attempt + 1))
+                        continue
+                    raise last_error
 
-            # Reuse the timestamp already captured above for the JSON-RPC id.
+            # Per-attempt deadline: starts fresh after any reconnect backoff.
+            attempt_start = time.time()
+            deadline = attempt_start + CE_MCP_TIMEOUT
+
             request = {
                 "jsonrpc": "2.0",
                 "method": method,
                 "params": params or {},
-                "id": int(now * 1000)
+                "id": int(attempt_start * 1000),
             }
 
             try:
@@ -216,11 +294,9 @@ class CEBridgeClient:
                 win32file.WriteFile(self.handle, header)
                 win32file.WriteFile(self.handle, req_json)
 
-                # Best-effort deadline: CE_MCP_TIMEOUT is respected via post-read checks.
+                # Best-effort deadline: CE_MCP_TIMEOUT is enforced post-read.
                 # A hard pre-empting timeout requires FILE_FLAG_OVERLAPPED at open time.
                 # TODO: implement hard timeout via overlapped I/O for a more robust approach.
-                deadline = now + CE_MCP_TIMEOUT
-
                 resp_header_buffer = win32file.ReadFile(self.handle, 4)[1]
                 if time.time() > deadline:
                     self.close()
@@ -266,9 +342,12 @@ class CEBridgeClient:
                 return response
 
             except pywintypes.error as e:
+                winerr = getattr(e, "winerror", None)
                 self.close()
-                last_error = ConnectionError(f"Pipe Communication failed: {e}")
+                last_error = ConnectionError(f"Pipe communication failed (winerror={winerr}): {e}")
                 if attempt < max_retries - 1:
+                    # Small delay so the Lua worker can finish recycling its pipe.
+                    time.sleep(0.1 * (attempt + 1))
                     continue  # Retry
 
         # All retries failed
@@ -397,8 +476,17 @@ def checksum_memory(address: str, size: int) -> str:
 # --- SCANNING ---
 
 @mcp.tool()
-def scan_all(value: str, type: str = "exact", protection: str = "+W-C") -> str:
-    """Unified Memory Scanner. Types: exact, string, array. Protection: +W-C (Writable, Not Copy-on-Write)."""
+def scan_all(value: str, type: str = "dword", protection: str = "+W-C") -> str:
+    """Unified Memory Scanner (first-scan exact-value).
+
+    Args:
+        value: Value to scan for, as a string (CE parses it per variable type).
+        type: Variable type. One of: byte, word, dword (default), qword, float, double, string.
+            Unknown values fall through to dword on the Lua side.
+        protection: CE protection filter string. Default "+W-C" (writable, not copy-on-write).
+
+    Returns JSON with: success, count. Subsequent next_scan calls refine the result set.
+    """
     return format_result(ce_client.send_command("scan_all", {"value": value, "type": type, "protection": protection}))
 
 @mcp.tool()
@@ -1357,7 +1445,6 @@ def generate_code_injection_script(address: str) -> str:
     }))
 
 
-@mcp.tool()
 # --- MEMORY OPERATIONS (Unit 14) ---
 
 @mcp.tool()
