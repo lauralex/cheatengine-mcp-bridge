@@ -600,11 +600,24 @@ def stop_dbvm_watch(address: str) -> str:
     return format_result(ce_client.send_command("stop_dbvm_watch", {"address": address}))
 
 @mcp.tool()
-def poll_dbvm_watch(address: str, max_results: int = 1000) -> str:
-    """Poll DBVM watch logs WITHOUT stopping. Returns register state at each execution hit."""
+def poll_dbvm_watch(address: str, max_results: int = 1000, clear: bool = True) -> str:
+    """Poll DBVM watch logs WITHOUT stopping. Returns register state at each execution hit.
+
+    Args:
+        address: The watched address (matches the one passed to start_dbvm_watch).
+        max_results: Maximum hits to return in this poll (default 1000).
+        clear: If True (default), clear the DBVM log buffer after reading. Set to
+            False to read without clearing — useful when multiple consumers need
+            to see the same hits. Note: until clear=True is eventually called,
+            the buffer grows and the next poll returns the same entries plus new ones.
+
+    Returns JSON with: success, status, virtual_address, physical_address, mode,
+    uptime_seconds, hit_count, hits (list).
+    """
     return format_result(ce_client.send_command("poll_dbvm_watch", {
-        "address": address, 
-        "max_results": max_results
+        "address": address,
+        "max_results": max_results,
+        "clear": clear,
     }))
 
 # --- SCRIPTING & CONTROL ---
@@ -615,9 +628,20 @@ def evaluate_lua(code: str) -> str:
     return format_result(ce_client.send_command("evaluate_lua", {"code": code}))
 
 @mcp.tool()
-def auto_assemble(script: str) -> str:
-    """Run an AutoAssembler script (injection, code caves, etc)."""
-    return format_result(ce_client.send_command("auto_assemble", {"script": script}))
+def auto_assemble(script: str, disable: bool = False) -> str:
+    """Run an AutoAssembler script (injection, code caves, etc).
+
+    Args:
+        script: The AutoAssembler script text.
+        disable: If True, run the script's [DISABLE] section (revert) instead
+            of the [ENABLE] section. Default False (enable).
+
+    Returns JSON with: success, executed, symbols (allocated/registered names).
+    """
+    return format_result(ce_client.send_command("auto_assemble", {
+        "script": script,
+        "disable": disable,
+    }))
 
 @mcp.tool()
 def ping() -> str:
@@ -1382,11 +1406,19 @@ def create_section(size: int) -> str:
     return format_result(ce_client.send_command("create_section", {"size": size}))
 
 @mcp.tool()
-def map_view_of_section(handle: str, address: str = None, size: int = 0) -> str:
-    """Map a section into the target process. 'handle' is from create_section. 'address' is optional preferred base. Returns mapped_address."""
-    return format_result(ce_client.send_command("map_view_of_section", {
-        "handle": handle, "address": address, "size": size
-    }))
+def map_view_of_section(handle: str, address: str = None) -> str:
+    """Map a section into the target process.
+
+    Args:
+        handle: Section handle from create_section (hex string).
+        address: Optional preferred base address (hex string or None to let CE pick).
+
+    Returns JSON with: success, mapped_address.
+    """
+    params: dict = {"handle": handle}
+    if address is not None:
+        params["address"] = address
+    return format_result(ce_client.send_command("map_view_of_section", params))
 
 # --- UNIT 15: ADVANCED SCANNING ---
 
@@ -1884,16 +1916,20 @@ def run_command(command: str, args: str = "") -> str:
     return format_result(ce_client.send_command("run_command", {"command": command, "args": args}))
 
 @mcp.tool()
-def shell_execute(command: str, args: str = "", verb: str = "open", working_dir: str = "") -> str:
-    """Invoke Windows ShellExecute. SECURITY: Arbitrary code execution.
+def shell_execute(command: str, args: str = "", working_dir: str = "") -> str:
+    """Invoke CE's shellExecute (wrapping Windows ShellExecute).
+    SECURITY: Arbitrary code execution.
 
     REQUIRES environment variable CE_MCP_ALLOW_SHELL=1 at server startup.
 
     Args:
         command: Command or file to execute.
         args: Arguments string.
-        verb: ShellExecute verb ("open", "edit", "print", "runas", etc.).
         working_dir: Working directory (empty for current).
+
+    Note: CE's shellExecute signature is (command, parameters, folder, showcommand)
+    and has no verb slot, so there is no way to pass "runas"/"edit"/"print" etc.
+    For elevation you must launch the target process already elevated.
 
     Returns JSON with: success.
     """
@@ -1901,7 +1937,7 @@ def shell_execute(command: str, args: str = "", verb: str = "open", working_dir:
     if blocked:
         return blocked
     return format_result(ce_client.send_command("shell_execute", {
-        "command": command, "args": args, "verb": verb, "working_dir": working_dir
+        "command": command, "args": args, "working_dir": working_dir
     }))
 # >>> END UNIT-20b <<<
 
@@ -1990,21 +2026,20 @@ def map_memory(address: str, size: int) -> str:
     ))
 
 @mcp.tool()
-def unmap_memory(mapped_address: str, size: int = 0) -> str:
+def unmap_memory(mapped_address: str) -> str:
     """Release a memory mapping created by map_memory().
 
-    The size parameter is accepted for API compatibility but unused internally;
-    the MDL handle captured during map_memory() is used to release the mapping.
+    The MDL handle captured during map_memory() is used to release the mapping,
+    so only the mapped_address is needed.
 
     Requires: DBK kernel driver loaded; a process must be attached.
 
     Args:
         mapped_address: The mapped address returned by a prior map_memory() call.
-        size: Unused; kept for API symmetry with map_memory().
     """
     return format_result(ce_client.send_command(
         "unmap_memory",
-        {"mapped_address": mapped_address, "size": size}
+        {"mapped_address": mapped_address}
     ))
 
 @mcp.tool()
