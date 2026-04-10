@@ -2248,7 +2248,113 @@ local function cmd_stop_dbvm_watch(params)
     }
 end
 
+-- ============================================================================
+-- COMMAND DISPATCHER
+-- ============================================================================
+
+local commandHandlers = {
+    -- Process & Modules
+    get_process_info = cmd_get_process_info,
+    enum_modules = cmd_enum_modules,
+    get_symbol_address = cmd_get_symbol_address,
+    
+    -- Memory Read
+    read_memory = cmd_read_memory,
+    read_bytes = cmd_read_memory,  -- Alias
+    read_integer = cmd_read_integer,
+    read_string = cmd_read_string,
+    read_pointer = cmd_read_pointer,
+    
+    -- Pattern Scanning
+    aob_scan = cmd_aob_scan,
+    pattern_scan = cmd_aob_scan,  -- Alias
+    scan_all = cmd_scan_all,
+    next_scan = cmd_next_scan,
+    write_integer = cmd_write_integer,
+    write_memory = cmd_write_memory,
+    write_string = cmd_write_string,
+    get_scan_results = cmd_get_scan_results,
+    search_string = cmd_search_string,
+    
+    -- Disassembly & Analysis
+    disassemble = cmd_disassemble,
+    get_instruction_info = cmd_get_instruction_info,
+    find_function_boundaries = cmd_find_function_boundaries,
+    analyze_function = cmd_analyze_function,
+    
+    -- Reference Finding
+    find_references = cmd_find_references,
+    find_call_references = cmd_find_call_references,
+    
+    -- Breakpoints
+    set_breakpoint = cmd_set_breakpoint,
+    set_execution_breakpoint = cmd_set_breakpoint,  -- Alias
+    set_data_breakpoint = cmd_set_data_breakpoint,
+    set_write_breakpoint = cmd_set_data_breakpoint,  -- Alias
+    remove_breakpoint = cmd_remove_breakpoint,
+    get_breakpoint_hits = cmd_get_breakpoint_hits,
+    list_breakpoints = cmd_list_breakpoints,
+    clear_all_breakpoints = cmd_clear_all_breakpoints,
+    
+    -- Memory Regions
+    get_memory_regions = cmd_get_memory_regions,
+    enum_memory_regions_full = cmd_enum_memory_regions_full,  -- More accurate, uses native API
+    
+    -- Lua Evaluation
+    evaluate_lua = cmd_evaluate_lua,
+    
+    -- High-Level Analysis Tools
+    dissect_structure = cmd_dissect_structure,
+    get_thread_list = cmd_get_thread_list,
+    auto_assemble = cmd_auto_assemble,
+    read_pointer_chain = cmd_read_pointer_chain,
+    get_rtti_classname = cmd_get_rtti_classname,
+    get_address_info = cmd_get_address_info,
+    checksum_memory = cmd_checksum_memory,
+    generate_signature = cmd_generate_signature,
+    
+    -- DBVM Hypervisor Tools (Safe Dynamic Tracing - Ring -1)
+    get_physical_address = cmd_get_physical_address,
+    start_dbvm_watch = cmd_start_dbvm_watch,
+    poll_dbvm_watch = cmd_poll_dbvm_watch,  -- Poll logs without stopping watch
+    stop_dbvm_watch = cmd_stop_dbvm_watch,
+    -- Semantic aliases for ease of use
+    find_what_writes_safe = cmd_start_dbvm_watch,  -- Alias: start watching for writes
+    find_what_accesses_safe = cmd_start_dbvm_watch,  -- Alias: start watching for accesses
+    get_watch_results = cmd_stop_dbvm_watch,  -- Alias: retrieve results and stop
+    
+    -- Utility
+    ping = cmd_ping,
+
+    -- >>> BEGIN UNIT-07 Process Lifecycle <<<
+    -- >>> END UNIT-07 <<<
+
+    -- Code Injection & Execution (Unit-09)
+
+    -- Debugger Control (Unit 10)
+
+    -- Unit-11: Debug Context + Per-Thread Breakpoints
+
+    -- Assembly & Compilation (Unit 13)
+
+    -- Memory Operations (Unit 14)
+
+    -- Unit 15: Advanced Scanning
+
+    -- Window / GUI (Unit-16)
+    -- Input Automation (Unit-17) — system-wide, no process guard required
+
+    -- Shell Execution (UNIT-20b) — registered inside the unit's do block
+    -- Unit-21: Kernel Mode / DBVM Extensions
+
+    -- Threading & Synchronization (Unit-22)
+
+    -- Debug Output & Multimedia (Unit 23)
+
+}
+
 -- >>> BEGIN UNIT-07 Process Lifecycle <<<
+do
 
 local function cmd_open_process(params)
     local target = params.process_id_or_name
@@ -2349,9 +2455,19 @@ local function cmd_get_opened_process_handle(params)
     return { success = true, handle = toHex(handle or 0) }
 end
 
+    -- Register Unit-07 handlers in the dispatcher
+    commandHandlers.create_process = cmd_create_process
+    commandHandlers.get_foreground_process = cmd_get_foreground_process
+    commandHandlers.get_opened_process_handle = cmd_get_opened_process_handle
+    commandHandlers.get_opened_process_id = cmd_get_opened_process_id
+    commandHandlers.get_process_list = cmd_get_process_list
+    commandHandlers.get_processid_from_name = cmd_get_processid_from_name
+    commandHandlers.open_process = cmd_open_process
+end
 -- >>> END UNIT-07 <<<
 
 -- >>> BEGIN UNIT-08 Memory Allocation <<<
+do
 
 -- Windows PAGE_* protection constants used by allocateMemory
 local PROT_CONSTANTS = {
@@ -2555,9 +2671,19 @@ local function cmd_allocate_kernel_memory(params)
     return { success = true, address = toHex(result) }
 end
 
+    -- Register Unit-08 handlers in the dispatcher
+    commandHandlers.allocate_kernel_memory = cmd_allocate_kernel_memory
+    commandHandlers.allocate_memory = cmd_allocate_memory
+    commandHandlers.allocate_shared_memory = cmd_allocate_shared_memory
+    commandHandlers.free_memory = cmd_free_memory
+    commandHandlers.full_access = cmd_full_access
+    commandHandlers.get_memory_protection = cmd_get_memory_protection
+    commandHandlers.set_memory_protection = cmd_set_memory_protection
+end
 -- >>> END UNIT-08 <<<
 
 -- >>> BEGIN UNIT-09 Code Injection <<<
+do
 -- ============================================================================
 -- COMMAND HANDLERS - CODE INJECTION & EXECUTION
 -- ============================================================================
@@ -2690,9 +2816,19 @@ local function cmd_execute_code_local_ex(params)
     return { success = true, return_value = retval }
 end
 
+    -- Register Unit-09 handlers in the dispatcher
+    commandHandlers.execute_code = cmd_execute_code
+    commandHandlers.execute_code_ex = cmd_execute_code_ex
+    commandHandlers.execute_code_local = cmd_execute_code_local
+    commandHandlers.execute_code_local_ex = cmd_execute_code_local_ex
+    commandHandlers.execute_method = cmd_execute_method
+    commandHandlers.inject_dll = cmd_inject_dll
+    commandHandlers.inject_dotnet_dll = cmd_inject_dotnet_dll
+end
 -- >>> END UNIT-09 <<<
 
 -- >>> BEGIN UNIT-10 Debugger Control <<<
+do
 -- ============================================================================
 -- COMMAND HANDLERS - DEBUGGER CONTROL (Unit 10)
 -- ============================================================================
@@ -2826,9 +2962,20 @@ end
 local function cmd_pause_process(params)   return callWithProcessGuard(pause)   end
 local function cmd_unpause_process(params) return callWithProcessGuard(unpause) end
 
+    -- Register Unit-10 handlers in the dispatcher
+    commandHandlers.debug_break_thread = cmd_debug_break_thread
+    commandHandlers.debug_continue = cmd_debug_continue
+    commandHandlers.debug_detach = cmd_debug_detach
+    commandHandlers.debug_get_current_debugger_interface = cmd_debug_get_current_debugger_interface
+    commandHandlers.debug_is_debugging = cmd_debug_is_debugging
+    commandHandlers.debug_process = cmd_debug_process
+    commandHandlers.pause_process = cmd_pause_process
+    commandHandlers.unpause_process = cmd_unpause_process
+end
 -- >>> END UNIT-10 <<<
 
 -- >>> BEGIN UNIT-11 Context + ThreadBPs <<<
+do
 -- ============================================================================
 -- UNIT-11: DEBUG CONTEXT INSPECTION + PER-THREAD BREAKPOINTS
 -- ============================================================================
@@ -3071,9 +3218,19 @@ local function cmd_debug_remove_breakpoint_for_thread(params)
     return { success = true, thread_id = threadId, address = toHex(addr) }
 end
 
+    -- Register Unit-11 handlers in the dispatcher
+    commandHandlers.debug_get_context = cmd_debug_get_context
+    commandHandlers.debug_get_last_branch_record = cmd_debug_get_last_branch_record
+    commandHandlers.debug_get_xmm_pointer = cmd_debug_get_xmm_pointer
+    commandHandlers.debug_remove_breakpoint_for_thread = cmd_debug_remove_breakpoint_for_thread
+    commandHandlers.debug_set_breakpoint_for_thread = cmd_debug_set_breakpoint_for_thread
+    commandHandlers.debug_set_context = cmd_debug_set_context
+    commandHandlers.debug_set_last_branch_recording = cmd_debug_set_last_branch_recording
+end
 -- >>> END UNIT-11 <<<
 
 -- >>> BEGIN UNIT-12 Symbol Management <<<
+do
 local function cmd_register_symbol(params)
     local name = params.name
     local address = params.address
@@ -3227,9 +3384,23 @@ local function cmd_reinitialize_symbol_handler(params)
     end
     return { success = true }
 end
+
+    -- Register Unit-12 handlers in the dispatcher
+    commandHandlers.delete_all_registered_symbols = cmd_delete_all_registered_symbols
+    commandHandlers.enable_kernel_symbols = cmd_enable_kernel_symbols
+    commandHandlers.enable_windows_symbols = cmd_enable_windows_symbols
+    commandHandlers.enum_registered_symbols = cmd_enum_registered_symbols
+    commandHandlers.get_module_size = cmd_get_module_size
+    commandHandlers.get_symbol_info = cmd_get_symbol_info
+    commandHandlers.load_new_symbols = cmd_load_new_symbols
+    commandHandlers.register_symbol = cmd_register_symbol
+    commandHandlers.reinitialize_symbol_handler = cmd_reinitialize_symbol_handler
+    commandHandlers.unregister_symbol = cmd_unregister_symbol
+end
 -- >>> END UNIT-12 <<<
 
 -- >>> BEGIN UNIT-13 Assembly & Compilation <<<
+do
 -- ============================================================================
 -- ASSEMBLY & COMPILATION TOOLS (Unit 13)
 -- ============================================================================
@@ -3432,9 +3603,18 @@ local function cmd_generate_code_injection_script(params)
     return { success = true, script = script }
 end
 
+    -- Register Unit-13 handlers in the dispatcher
+    commandHandlers.assemble_instruction = cmd_assemble_instruction
+    commandHandlers.auto_assemble_check = cmd_auto_assemble_check
+    commandHandlers.compile_c_code = cmd_compile_c_code
+    commandHandlers.compile_cs_code = cmd_compile_cs_code
+    commandHandlers.generate_api_hook_script = cmd_generate_api_hook_script
+    commandHandlers.generate_code_injection_script = cmd_generate_code_injection_script
+end
 -- >>> END UNIT-13 <<<
 
 -- >>> BEGIN UNIT-14 Memory Operations <<<
+do
 -- ============================================================================
 -- COMMAND HANDLERS - MEMORY OPERATIONS (Unit 14)
 -- ============================================================================
@@ -3635,6 +3815,16 @@ local function cmd_map_view_of_section(params)
     return { success = true, mapped_address = toHex(mapped) }
 end
 
+    -- Register Unit-14 handlers in the dispatcher
+    commandHandlers.compare_memory = cmd_compare_memory
+    commandHandlers.copy_memory = cmd_copy_memory
+    commandHandlers.create_section = cmd_create_section
+    commandHandlers.map_view_of_section = cmd_map_view_of_section
+    commandHandlers.md5_file = cmd_md5_file
+    commandHandlers.md5_memory = cmd_md5_memory
+    commandHandlers.read_region_from_file = cmd_read_region_from_file
+    commandHandlers.write_region_to_file = cmd_write_region_to_file
+end
 -- >>> END UNIT-14 <<<
 
     -- 4. Cleanup persistent scans (Unit 15)
@@ -3650,6 +3840,7 @@ end
 
     serverState.persistent_scans = {}
 -- >>> BEGIN UNIT-15 Advanced Scanning <<<
+do
 -- ============================================================================
 -- UNIT 15: Advanced Scanning (module-scoped, unique, persistent)
 -- ============================================================================
@@ -4028,9 +4219,21 @@ local function cmd_persistent_scan_destroy(params)
     return { success = true, scan_name = name, destroyed = true }
 end
 
+    -- Register Unit-15 handlers in the dispatcher
+    commandHandlers.aob_scan_module = cmd_aob_scan_module
+    commandHandlers.aob_scan_module_unique = cmd_aob_scan_module_unique
+    commandHandlers.aob_scan_unique = cmd_aob_scan_unique
+    commandHandlers.create_persistent_scan = cmd_create_persistent_scan
+    commandHandlers.persistent_scan_destroy = cmd_persistent_scan_destroy
+    commandHandlers.persistent_scan_first_scan = cmd_persistent_scan_first_scan
+    commandHandlers.persistent_scan_get_results = cmd_persistent_scan_get_results
+    commandHandlers.persistent_scan_next_scan = cmd_persistent_scan_next_scan
+    commandHandlers.pointer_rescan = cmd_pointer_rescan
+end
 -- >>> END UNIT-15 <<<
 
 -- >>> BEGIN UNIT-16 Window GUI <<<
+do
 -- ============================================================================
 -- WINDOW / GUI COMMAND HANDLERS
 -- No process guard required: these APIs are system-wide window operations.
@@ -4220,9 +4423,20 @@ local function cmd_show_selection_list(params)
     }
 end
 
+    -- Register Unit-16 handlers in the dispatcher
+    commandHandlers.find_window = cmd_find_window
+    commandHandlers.get_window_caption = cmd_get_window_caption
+    commandHandlers.get_window_class_name = cmd_get_window_class_name
+    commandHandlers.get_window_process_id = cmd_get_window_process_id
+    commandHandlers.input_query = cmd_input_query
+    commandHandlers.send_window_message = cmd_send_window_message
+    commandHandlers.show_message = cmd_show_message
+    commandHandlers.show_selection_list = cmd_show_selection_list
+end
 -- >>> END UNIT-16 <<<
 
 -- >>> BEGIN UNIT-17 Input Automation <<<
+do
 -- ============================================================================
 -- COMMAND HANDLERS - INPUT AUTOMATION (mouse, keyboard, screen)
 -- These APIs operate system-wide and require NO attached process.
@@ -4318,9 +4532,20 @@ local function cmd_get_screen_info(params)
     return { success = true, width = width, height = height, dpi = dpi }
 end
 
+    -- Register Unit-17 handlers in the dispatcher
+    commandHandlers.do_key_press = cmd_do_key_press
+    commandHandlers.get_mouse_pos = cmd_get_mouse_pos
+    commandHandlers.get_pixel = cmd_get_pixel
+    commandHandlers.get_screen_info = cmd_get_screen_info
+    commandHandlers.is_key_pressed = cmd_is_key_pressed
+    commandHandlers.key_down = cmd_key_down
+    commandHandlers.key_up = cmd_key_up
+    commandHandlers.set_mouse_pos = cmd_set_mouse_pos
+end
 -- >>> END UNIT-17 <<<
 
 -- >>> BEGIN UNIT-18 Cheat Table Records <<<
+do
 
 local UNIT18_TYPE_MAP = {
     byte      = "vtByte",
@@ -4587,9 +4812,20 @@ local function cmd_set_memory_record_value(params)
     return { success = true }
 end
 
+    -- Register Unit-18 handlers in the dispatcher
+    commandHandlers.create_memory_record = cmd_create_memory_record
+    commandHandlers.delete_memory_record = cmd_delete_memory_record
+    commandHandlers.get_address_list = cmd_get_address_list
+    commandHandlers.get_memory_record = cmd_get_memory_record
+    commandHandlers.get_memory_record_value = cmd_get_memory_record_value
+    commandHandlers.load_table = cmd_load_table
+    commandHandlers.save_table = cmd_save_table
+    commandHandlers.set_memory_record_value = cmd_set_memory_record_value
+end
 -- >>> END UNIT-18 <<<
 
 -- >>> BEGIN UNIT-19 Structure Management <<<
+do
 
 serverState.structures = serverState.structures or {}
 serverState.structure_next_id = serverState.structure_next_id or 1
@@ -4830,9 +5066,18 @@ local function cmd_delete_structure(params)
     return { success = true }
 end
 
+    -- Register Unit-19 handlers in the dispatcher
+    commandHandlers.add_element_to_structure = cmd_add_element_to_structure
+    commandHandlers.create_structure = cmd_create_structure
+    commandHandlers.delete_structure = cmd_delete_structure
+    commandHandlers.export_structure_to_xml = cmd_export_structure_to_xml
+    commandHandlers.get_structure_by_name = cmd_get_structure_by_name
+    commandHandlers.get_structure_elements = cmd_get_structure_elements
+end
 -- >>> END UNIT-19 <<<
 
 -- >>> BEGIN UNIT-20a File IO Clipboard <<<
+do
 -- ============================================================================
 -- UNIT-20a: Safe File I/O and Clipboard Tools
 -- ============================================================================
@@ -4924,8 +5169,20 @@ local function cmd_write_clipboard(params)
     return { success = true }
 end
 
+    -- Register Unit-20a handlers in the dispatcher
+    commandHandlers.delete_file = cmd_delete_file
+    commandHandlers.file_exists = cmd_file_exists
+    commandHandlers.get_directory_list = cmd_get_directory_list
+    commandHandlers.get_file_list = cmd_get_file_list
+    commandHandlers.get_file_version = cmd_get_file_version
+    commandHandlers.get_temp_folder = cmd_get_temp_folder
+    commandHandlers.read_clipboard = cmd_read_clipboard
+    commandHandlers.write_clipboard = cmd_write_clipboard
+end
 -- >>> END UNIT-20a <<<
 
+-- >>> BEGIN UNIT-20b Shell Execution <<<
+do
 -- UNIT-20b: Shell Execution Handlers
 -- NOTE: Security gate (CE_MCP_ALLOW_SHELL env var check) is enforced on the
 --       Python side, before this Lua code is ever reached.
@@ -4974,10 +5231,15 @@ local function cmd_shell_execute(params)
     return { success = true }
 end
 
+    -- Register Unit-20b handlers in the dispatcher
+    commandHandlers.run_command = cmd_run_command
+    commandHandlers.shell_execute = cmd_shell_execute
+end
 -- >>> END UNIT-20b <<<
 
 -- ============================================================================
 -- >>> BEGIN UNIT-21 Kernel DBVM <<<
+do
 -- ============================================================================
 -- COMMAND HANDLERS - KERNEL MODE / DBVM EXTENSIONS (Unit 21)
 -- Requires DBK kernel driver and/or DBVM hypervisor to be loaded.
@@ -5162,9 +5424,21 @@ local function cmd_get_physical_address_cr3(params)
     return { success = true, physical_address = toHex(phys) }
 end
 
+    -- Register Unit-21 handlers in the dispatcher
+    commandHandlers.dbk_get_cr0 = cmd_dbk_get_cr0
+    commandHandlers.dbk_get_cr3 = cmd_dbk_get_cr3
+    commandHandlers.dbk_get_cr4 = cmd_dbk_get_cr4
+    commandHandlers.dbk_writes_ignore_write_protection = cmd_dbk_writes_ignore_write_protection
+    commandHandlers.get_physical_address_cr3 = cmd_get_physical_address_cr3
+    commandHandlers.map_memory = cmd_map_memory
+    commandHandlers.read_process_memory_cr3 = cmd_read_process_memory_cr3
+    commandHandlers.unmap_memory = cmd_unmap_memory
+    commandHandlers.write_process_memory_cr3 = cmd_write_process_memory_cr3
+end
 -- >>> END UNIT-21 <<<
 
 -- >>> BEGIN UNIT-22 Threading Sync <<<
+do
 -- ============================================================================
 -- COMMAND HANDLERS - THREADING & SYNCHRONIZATION
 -- These operate on CE's Lua scripting host, NOT the target process.
@@ -5255,9 +5529,18 @@ local function cmd_in_main_thread(params)
     return { success = true, is_main_thread = result == true }
 end
 
+    -- Register Unit-22 handlers in the dispatcher
+    commandHandlers.check_synchronize = cmd_check_synchronize
+    commandHandlers.create_thread = cmd_create_thread
+    commandHandlers.get_global_variable = cmd_get_global_variable
+    commandHandlers.in_main_thread = cmd_in_main_thread
+    commandHandlers.queue_to_main_thread = cmd_queue_to_main_thread
+    commandHandlers.set_global_variable = cmd_set_global_variable
+end
 -- >>> END UNIT-22 <<<
 
 -- >>> BEGIN UNIT-23 Debug Multimedia <<<
+do
 
 local progressStateMap = {
     none          = tbpsNone,
@@ -5328,255 +5611,16 @@ local function cmd_set_progress_value(params)
     return { success = true }
 end
 
+    -- Register Unit-23 handlers in the dispatcher
+    commandHandlers.beep = cmd_beep
+    commandHandlers.output_debug_string = cmd_output_debug_string
+    commandHandlers.play_sound = cmd_play_sound
+    commandHandlers.set_progress_state = cmd_set_progress_state
+    commandHandlers.set_progress_value = cmd_set_progress_value
+    commandHandlers.speak_text = cmd_speak_text
+end
 -- >>> END UNIT-23 <<<
 
--- ============================================================================
--- COMMAND DISPATCHER
--- ============================================================================
-
-local commandHandlers = {
-    -- Process & Modules
-    get_process_info = cmd_get_process_info,
-    enum_modules = cmd_enum_modules,
-    get_symbol_address = cmd_get_symbol_address,
-    
-    -- Memory Read
-    read_memory = cmd_read_memory,
-    read_bytes = cmd_read_memory,  -- Alias
-    read_integer = cmd_read_integer,
-    read_string = cmd_read_string,
-    read_pointer = cmd_read_pointer,
-    
-    -- Pattern Scanning
-    aob_scan = cmd_aob_scan,
-    pattern_scan = cmd_aob_scan,  -- Alias
-    scan_all = cmd_scan_all,
-    next_scan = cmd_next_scan,
-    write_integer = cmd_write_integer,
-    write_memory = cmd_write_memory,
-    write_string = cmd_write_string,
-    get_scan_results = cmd_get_scan_results,
-    search_string = cmd_search_string,
-    
-    -- Disassembly & Analysis
-    disassemble = cmd_disassemble,
-    get_instruction_info = cmd_get_instruction_info,
-    find_function_boundaries = cmd_find_function_boundaries,
-    analyze_function = cmd_analyze_function,
-    
-    -- Reference Finding
-    find_references = cmd_find_references,
-    find_call_references = cmd_find_call_references,
-    
-    -- Breakpoints
-    set_breakpoint = cmd_set_breakpoint,
-    set_execution_breakpoint = cmd_set_breakpoint,  -- Alias
-    set_data_breakpoint = cmd_set_data_breakpoint,
-    set_write_breakpoint = cmd_set_data_breakpoint,  -- Alias
-    remove_breakpoint = cmd_remove_breakpoint,
-    get_breakpoint_hits = cmd_get_breakpoint_hits,
-    list_breakpoints = cmd_list_breakpoints,
-    clear_all_breakpoints = cmd_clear_all_breakpoints,
-    
-    -- Memory Regions
-    get_memory_regions = cmd_get_memory_regions,
-    enum_memory_regions_full = cmd_enum_memory_regions_full,  -- More accurate, uses native API
-    
-    -- Lua Evaluation
-    evaluate_lua = cmd_evaluate_lua,
-    
-    -- High-Level Analysis Tools
-    dissect_structure = cmd_dissect_structure,
-    get_thread_list = cmd_get_thread_list,
-    auto_assemble = cmd_auto_assemble,
-    read_pointer_chain = cmd_read_pointer_chain,
-    get_rtti_classname = cmd_get_rtti_classname,
-    get_address_info = cmd_get_address_info,
-    checksum_memory = cmd_checksum_memory,
-    generate_signature = cmd_generate_signature,
-    
-    -- DBVM Hypervisor Tools (Safe Dynamic Tracing - Ring -1)
-    get_physical_address = cmd_get_physical_address,
-    start_dbvm_watch = cmd_start_dbvm_watch,
-    poll_dbvm_watch = cmd_poll_dbvm_watch,  -- Poll logs without stopping watch
-    stop_dbvm_watch = cmd_stop_dbvm_watch,
-    -- Semantic aliases for ease of use
-    find_what_writes_safe = cmd_start_dbvm_watch,  -- Alias: start watching for writes
-    find_what_accesses_safe = cmd_start_dbvm_watch,  -- Alias: start watching for accesses
-    get_watch_results = cmd_stop_dbvm_watch,  -- Alias: retrieve results and stop
-    
-    -- Utility
-    ping = cmd_ping,
-
-    -- >>> BEGIN UNIT-07 Process Lifecycle <<<
-    open_process = cmd_open_process,
-    get_process_list = cmd_get_process_list,
-    get_processid_from_name = cmd_get_processid_from_name,
-    get_foreground_process = cmd_get_foreground_process,
-    create_process = cmd_create_process,
-    get_opened_process_id = cmd_get_opened_process_id,
-    get_opened_process_handle = cmd_get_opened_process_handle,
-    -- >>> END UNIT-07 <<<
-
-    -- >>> BEGIN UNIT-08 dispatcher entries <<<
-    allocate_memory        = cmd_allocate_memory,
-    free_memory            = cmd_free_memory,
-    allocate_shared_memory = cmd_allocate_shared_memory,
-    get_memory_protection  = cmd_get_memory_protection,
-    set_memory_protection  = cmd_set_memory_protection,
-    full_access            = cmd_full_access,
-    allocate_kernel_memory = cmd_allocate_kernel_memory,
-    -- >>> END UNIT-08 <<<
-
-    -- Code Injection & Execution (Unit-09)
-    inject_dll            = cmd_inject_dll,
-    inject_dotnet_dll     = cmd_inject_dotnet_dll,
-    execute_code          = cmd_execute_code,
-    execute_code_ex       = cmd_execute_code_ex,
-    execute_method        = cmd_execute_method,
-    execute_code_local    = cmd_execute_code_local,
-    execute_code_local_ex = cmd_execute_code_local_ex,
-
-    -- Debugger Control (Unit 10)
-    debug_process                      = cmd_debug_process,
-    debug_is_debugging                 = cmd_debug_is_debugging,
-    debug_get_current_debugger_interface = cmd_debug_get_current_debugger_interface,
-    debug_break_thread                 = cmd_debug_break_thread,
-    debug_continue                     = cmd_debug_continue,
-    debug_detach                       = cmd_debug_detach,
-    pause_process                      = cmd_pause_process,
-    unpause_process                    = cmd_unpause_process,
-
-    -- Unit-11: Debug Context + Per-Thread Breakpoints
-    debug_get_context                  = cmd_debug_get_context,
-    debug_set_context                  = cmd_debug_set_context,
-    debug_get_xmm_pointer              = cmd_debug_get_xmm_pointer,
-    debug_set_last_branch_recording    = cmd_debug_set_last_branch_recording,
-    debug_get_last_branch_record       = cmd_debug_get_last_branch_record,
-    debug_set_breakpoint_for_thread    = cmd_debug_set_breakpoint_for_thread,
-    debug_remove_breakpoint_for_thread = cmd_debug_remove_breakpoint_for_thread,
-
-    -- >>> BEGIN UNIT-12 dispatcher entries <<<
-    register_symbol                = cmd_register_symbol,
-    unregister_symbol              = cmd_unregister_symbol,
-    enum_registered_symbols        = cmd_enum_registered_symbols,
-    delete_all_registered_symbols  = cmd_delete_all_registered_symbols,
-    enable_windows_symbols         = cmd_enable_windows_symbols,
-    enable_kernel_symbols          = cmd_enable_kernel_symbols,
-    get_symbol_info                = cmd_get_symbol_info,
-    get_module_size                = cmd_get_module_size,
-    load_new_symbols               = cmd_load_new_symbols,
-    reinitialize_symbol_handler    = cmd_reinitialize_symbol_handler,
-    -- >>> END UNIT-12 <<<
-
-    -- Assembly & Compilation (Unit 13)
-    assemble_instruction = cmd_assemble_instruction,
-    auto_assemble_check = cmd_auto_assemble_check,
-    compile_c_code = cmd_compile_c_code,
-    compile_cs_code = cmd_compile_cs_code,
-    generate_api_hook_script = cmd_generate_api_hook_script,
-    generate_code_injection_script = cmd_generate_code_injection_script,
-
-    -- Memory Operations (Unit 14)
-    copy_memory = cmd_copy_memory,
-    compare_memory = cmd_compare_memory,
-    write_region_to_file = cmd_write_region_to_file,
-    read_region_from_file = cmd_read_region_from_file,
-    md5_memory = cmd_md5_memory,
-    md5_file = cmd_md5_file,
-    create_section = cmd_create_section,
-    map_view_of_section = cmd_map_view_of_section,
-
-    -- Unit 15: Advanced Scanning
-    aob_scan_unique           = cmd_aob_scan_unique,
-    aob_scan_module           = cmd_aob_scan_module,
-    aob_scan_module_unique    = cmd_aob_scan_module_unique,
-    pointer_rescan            = cmd_pointer_rescan,
-    create_persistent_scan    = cmd_create_persistent_scan,
-    persistent_scan_first_scan    = cmd_persistent_scan_first_scan,
-    persistent_scan_next_scan     = cmd_persistent_scan_next_scan,
-    persistent_scan_get_results   = cmd_persistent_scan_get_results,
-    persistent_scan_destroy       = cmd_persistent_scan_destroy,
-
-    -- Window / GUI (Unit-16)
-    find_window             = cmd_find_window,
-    get_window_caption      = cmd_get_window_caption,
-    get_window_class_name   = cmd_get_window_class_name,
-    get_window_process_id   = cmd_get_window_process_id,
-    send_window_message     = cmd_send_window_message,
-    show_message            = cmd_show_message,
-    input_query             = cmd_input_query,
-    show_selection_list     = cmd_show_selection_list,
-    -- Input Automation (Unit-17) — system-wide, no process guard required
-    get_pixel = cmd_get_pixel,
-    get_mouse_pos = cmd_get_mouse_pos,
-    set_mouse_pos = cmd_set_mouse_pos,
-    is_key_pressed = cmd_is_key_pressed,
-    key_down = cmd_key_down,
-    key_up = cmd_key_up,
-    do_key_press = cmd_do_key_press,
-    get_screen_info = cmd_get_screen_info,
-
-
-    -- >>> BEGIN UNIT-18 dispatcher entries <<<
-    load_table               = cmd_load_table,
-    save_table               = cmd_save_table,
-    get_address_list         = cmd_get_address_list,
-    get_memory_record        = cmd_get_memory_record,
-    create_memory_record     = cmd_create_memory_record,
-    delete_memory_record     = cmd_delete_memory_record,
-    get_memory_record_value  = cmd_get_memory_record_value,
-    set_memory_record_value  = cmd_set_memory_record_value,
-    -- >>> END UNIT-18 <<<
-
-    -- >>> BEGIN UNIT-19 dispatcher entries <<<
-    create_structure           = cmd_create_structure,
-    get_structure_by_name      = cmd_get_structure_by_name,
-    add_element_to_structure   = cmd_add_element_to_structure,
-    get_structure_elements     = cmd_get_structure_elements,
-    export_structure_to_xml    = cmd_export_structure_to_xml,
-    delete_structure           = cmd_delete_structure,
-    -- >>> END UNIT-19 <<<
-    file_exists = cmd_file_exists,
-    delete_file = cmd_delete_file,
-    get_file_list = cmd_get_file_list,
-    get_directory_list = cmd_get_directory_list,
-    get_temp_folder = cmd_get_temp_folder,
-    get_file_version = cmd_get_file_version,
-    read_clipboard = cmd_read_clipboard,
-    write_clipboard = cmd_write_clipboard,
-
-    -- Shell Execution (UNIT-20b) - Security gate enforced on Python side
-    run_command = cmd_run_command,
-    shell_execute = cmd_shell_execute,
-    -- Unit-21: Kernel Mode / DBVM Extensions
-    dbk_get_cr0 = cmd_dbk_get_cr0,
-    dbk_get_cr3 = cmd_dbk_get_cr3,
-    dbk_get_cr4 = cmd_dbk_get_cr4,
-    read_process_memory_cr3 = cmd_read_process_memory_cr3,
-    write_process_memory_cr3 = cmd_write_process_memory_cr3,
-    map_memory = cmd_map_memory,
-    unmap_memory = cmd_unmap_memory,
-    dbk_writes_ignore_write_protection = cmd_dbk_writes_ignore_write_protection,
-    get_physical_address_cr3 = cmd_get_physical_address_cr3,
-
-
-    -- Threading & Synchronization (Unit-22)
-    create_thread           = cmd_create_thread,
-    get_global_variable     = cmd_get_global_variable,
-    set_global_variable     = cmd_set_global_variable,
-    queue_to_main_thread    = cmd_queue_to_main_thread,
-    check_synchronize       = cmd_check_synchronize,
-    in_main_thread          = cmd_in_main_thread,
-
-    -- Debug Output & Multimedia (Unit 23)
-    output_debug_string = cmd_output_debug_string,
-    speak_text = cmd_speak_text,
-    play_sound = cmd_play_sound,
-    beep = cmd_beep,
-    set_progress_state = cmd_set_progress_state,
-    set_progress_value = cmd_set_progress_value,
-}
 
 -- ============================================================================
 -- MAIN COMMAND PROCESSOR
