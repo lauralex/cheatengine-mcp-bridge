@@ -4604,6 +4604,7 @@ local function cmd_persistent_scan_get_results(params)
         total     = total,
         offset    = offset,
         limit     = limit,
+        returned  = #results,
         results   = results
     }
 end
