@@ -489,6 +489,102 @@ def ping() -> str:
     """Check connectivity and get version info."""
     return format_result(ce_client.send_command("ping"))
 
+# --- WINDOW / GUI TOOLS (Unit-16) ---
+
+@mcp.tool()
+def find_window(title: str = None, class_name: str = None) -> str:
+    """Find a top-level window by title and/or class name (system-wide, no process required).
+
+    At least one of title or class_name must be provided.
+    Returns {success, handle} on success or {success=false, error_code="NOT_FOUND"} when
+    no matching window exists.
+    """
+    params = {}
+    if title is not None:
+        params["title"] = title
+    if class_name is not None:
+        params["class_name"] = class_name
+    return format_result(ce_client.send_command("find_window", params))
+
+@mcp.tool()
+def get_window_caption(handle: str) -> str:
+    """Return the caption (title bar text) of a window given its handle (hex string)."""
+    return format_result(ce_client.send_command("get_window_caption", {"handle": handle}))
+
+@mcp.tool()
+def get_window_class_name(handle: str) -> str:
+    """Return the window class name of a window given its handle (hex string)."""
+    return format_result(ce_client.send_command("get_window_class_name", {"handle": handle}))
+
+@mcp.tool()
+def get_window_process_id(handle: str) -> str:
+    """Return the process ID that owns a window given its handle (hex string)."""
+    return format_result(ce_client.send_command("get_window_process_id", {"handle": handle}))
+
+@mcp.tool()
+def send_window_message(handle: str, msg: int, wparam: int = 0, lparam: int = 0) -> str:
+    """Send a Windows message (WM_*) to a window.
+
+    handle  -- hex window handle string
+    msg     -- message ID (e.g. 0x000F for WM_PAINT)
+    wparam  -- WPARAM value (default 0)
+    lparam  -- LPARAM value (default 0)
+
+    Returns {success, result} where result is the integer return value of SendMessage.
+    """
+    return format_result(ce_client.send_command("send_window_message", {
+        "handle": handle,
+        "msg": msg,
+        "wparam": wparam,
+        "lparam": lparam,
+    }))
+
+@mcp.tool()
+def show_message(message: str) -> str:
+    """Show a modal message dialog in Cheat Engine.
+
+    WARNING — NOT SAFE FOR AUTOMATED WORKFLOWS:
+    This call BLOCKS the CE main thread until the user dismisses the dialog by
+    clicking OK.  Do not invoke from automation that expects a timely response.
+
+    Returns {success} after the user closes the dialog.
+    """
+    return format_result(ce_client.send_command("show_message", {"message": message}))
+
+@mcp.tool()
+def input_query(caption: str, prompt: str, default: str = "") -> str:
+    """Show a modal text-input dialog in Cheat Engine and return what the user typed.
+
+    WARNING — NOT SAFE FOR AUTOMATED WORKFLOWS:
+    This call BLOCKS the CE main thread until the user submits or cancels the dialog.
+    Do not invoke from automation that expects a timely response.
+
+    Returns {success, value, cancelled}.  If cancelled is true, value is an empty string.
+    """
+    return format_result(ce_client.send_command("input_query", {
+        "caption": caption,
+        "prompt": prompt,
+        "default": default,
+    }))
+
+@mcp.tool()
+def show_selection_list(caption: str, prompt: str, options: list) -> str:
+    """Show a modal list-selection dialog in Cheat Engine.
+
+    WARNING — NOT SAFE FOR AUTOMATED WORKFLOWS:
+    This call BLOCKS the CE main thread until the user picks an item or cancels.
+    Do not invoke from automation that expects a timely response.
+
+    options -- list of strings to display
+    Returns {success, selected_index, selected_value, cancelled}.
+    selected_index is -1 and cancelled is true when the user dismisses without selecting.
+    """
+    return format_result(ce_client.send_command("show_selection_list", {
+        "caption": caption,
+        "prompt": prompt,
+        "options": options,
+    }))
+
 if __name__ == "__main__":
     try:
         debug_log("Starting FastMCP server (v11/v99 compatible)...")
