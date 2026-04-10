@@ -1900,9 +1900,9 @@ def main():
              validators=[has_field("success", bool), field_equals("success", True)])
 
         _add("ext_u23_set_progress_value",
-             "Unit-23: set_progress_value 0",
+             "Unit-23: set_progress_value current=0 max=100",
              "set_progress_value",
-             params={"value": 0},
+             params={"current": 0, "max": 100},
              validators=[has_field("success", bool), field_equals("success", True)])
 
         # ---------- Unit 8: set_memory_protection roundtrip ----------
@@ -1983,14 +1983,24 @@ def main():
                                         _write_skip, "write_region_to_file failed"))
 
         # ---------- Unit 15: persistent_scan full lifecycle ----------
+        # create -> first_scan -> next_scan -> get_results -> destroy
         _ext_u15_lifecycle_name = "mcp_test_lifecycle_v12"
+        _add("ext_u15_persistent_lifecycle_create",
+             "Unit-15: create_persistent_scan (lifecycle fixture)",
+             "create_persistent_scan",
+             params={"name": _ext_u15_lifecycle_name},
+             validators=[has_field("success", bool), field_equals("success", True)],
+             skip_reason=None if _proc_ok else "No process attached")
+
         _add("ext_u15_persistent_first_scan",
              "Unit-15: persistent_scan_first_scan (dword=1)",
              "persistent_scan_first_scan",
              params={"name": _ext_u15_lifecycle_name, "value": "1",
                      "type": "dword", "scan_option": "exact"},
              validators=[has_field("success", bool), field_equals("success", True)],
-             skip_reason=None if _proc_ok else "No process attached")
+             skip_reason=_cascaded_skip("ext_u15_persistent_lifecycle_create",
+                                        None if _proc_ok else "No process attached",
+                                        "create_persistent_scan failed"))
 
         _add("ext_u15_persistent_next_scan",
              "Unit-15: persistent_scan_next_scan (unchanged)",
@@ -2081,8 +2091,12 @@ def main():
              "Unit-18: get_memory_record by id",
              "get_memory_record",
              params={"id": _ext_u18_mr_id if _ext_u18_mr_id is not None else -1},
+             # Handler wraps the fields in a nested `record` table.
              validators=[has_field("success", bool), field_equals("success", True),
-                         has_field("description", str)],
+                         has_field("record", dict),
+                         lambda r: (isinstance(r.get("record"), dict)
+                                    and "description" in r["record"],
+                                    "record.description missing")],
              skip_reason=_cascaded_skip("ext_u18_create_memory_record",
                                         None, "create_memory_record failed"))
 
@@ -2253,24 +2267,33 @@ def main():
              skip_reason=None if _proc_ok else "No process attached")
 
         # ---------- Unit 12: symbol handler operations ----------
+        # CAUTION: load_new_symbols / reinitialize_symbol_handler /
+        # get_symbol_info / enable_windows_symbols / enable_kernel_symbols
+        # are INTENTIONALLY NOT TESTED automatically. Live runs have shown
+        # they can freeze or crash Cheat Engine when the attached target
+        # uses anti-cheat (observed on RainbowSix.exe during v12 regression).
+        # CE loses the Lua state mid-call and all subsequent pipe traffic
+        # fails with ERROR_NO_DATA / ERROR_BROKEN_PIPE. Leave them for
+        # manual verification on a benign target process.
+        _ext_u12_symbols_skip = "symbol-handler ops can crash CE on anti-cheat targets"
         _add("ext_u12_load_new_symbols",
              "Unit-12: load_new_symbols",
              "load_new_symbols",
              validators=[has_field("success", bool)],
-             skip_reason=None if _proc_ok else "No process attached")
+             skip_reason=_ext_u12_symbols_skip)
 
         _add("ext_u12_reinitialize_symbol_handler",
              "Unit-12: reinitialize_symbol_handler",
              "reinitialize_symbol_handler",
              validators=[has_field("success", bool)],
-             skip_reason=None if _proc_ok else "No process attached")
+             skip_reason=_ext_u12_symbols_skip)
 
         _add("ext_u12_get_symbol_info_kernel32_loadlibrary",
              "Unit-12: get_symbol_info on kernel32.LoadLibraryA",
              "get_symbol_info",
              params={"name": "LoadLibraryA"},
              validators=[has_field("success", bool)],
-             skip_reason=None if _proc_ok else "No process attached")
+             skip_reason=_ext_u12_symbols_skip)
 
         # ---------- Unit 15: aob_scan_module (module-scoped search) ----------
         # Module name comes from the baseline discovery in the early tests.
@@ -2329,7 +2352,6 @@ def main():
              "Unit-13: generate_api_hook_script for an address",
              "generate_api_hook_script",
              params={"address": hex(entry_point) if entry_point else "0x00401000",
-                     "size": 6,
                      "target_address": hex((entry_point or 0) + 0x1000)},
              validators=[has_field("success", bool), field_equals("success", True),
                          has_field("script", str)],
@@ -2344,17 +2366,19 @@ def main():
              validators=[has_field("success", bool)])
 
         # ---------- Unit 12: enable_windows_symbols / enable_kernel_symbols ----------
+        # Same rationale as the symbol-handler skip above — these trigger
+        # symbol-loader work that can kill CE on anti-cheat targets.
         _add("ext_u12_enable_windows_symbols",
              "Unit-12: enable_windows_symbols",
              "enable_windows_symbols",
              validators=[has_field("success", bool)],
-             skip_reason=None if _proc_ok else "No process attached")
+             skip_reason=_ext_u12_symbols_skip)
 
         _add("ext_u12_enable_kernel_symbols",
              "Unit-12: enable_kernel_symbols",
              "enable_kernel_symbols",
              validators=[has_field("success", bool)],
-             skip_reason=None if _proc_ok else "No process attached")
+             skip_reason=_ext_u12_symbols_skip)
 
         # ---------- Extra safe coverage for misc handlers ----------
         # Plain read_pointer (distinct from read_pointer_chain) — single
@@ -2498,8 +2522,9 @@ def main():
     _ext_u15_keys = [
         "ext_u15_aob_scan_unique", "ext_u15_create_persistent_scan",
         "ext_u15_persistent_scan_destroy",
-        "ext_u15_persistent_first_scan", "ext_u15_persistent_next_scan",
-        "ext_u15_persistent_get_results", "ext_u15_persistent_lifecycle_destroy",
+        "ext_u15_persistent_lifecycle_create", "ext_u15_persistent_first_scan",
+        "ext_u15_persistent_next_scan", "ext_u15_persistent_get_results",
+        "ext_u15_persistent_lifecycle_destroy",
         "ext_u15_aob_scan_module", "ext_u15_aob_scan_module_unique_non_unique",
     ]
     _ext_u16_keys = [

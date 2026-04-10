@@ -4195,10 +4195,21 @@ local function cmd_map_view_of_section(params)
     local handle = params.handle
     local address = params.address  -- optional preferred base
 
-    if not handle then return { success = false, error = "Missing handle" } end
+    if not handle then
+        return { success = false, error = "Missing handle", error_code = "INVALID_PARAMS" }
+    end
 
-    if type(handle) == "string" then handle = tonumber(handle, 16) end
-    if not handle then return { success = false, error = "Invalid handle" } end
+    -- Lua 5.3's tonumber(str, 16) rejects a "0x" prefix because 'x' isn't
+    -- a hex digit. Strip the prefix before converting. (Unit-16 has its
+    -- own parseHandle helper but it lives inside a different do-block and
+    -- isn't in scope here.)
+    if type(handle) == "string" then
+        local clean = handle:gsub("^0[xX]", "")
+        handle = tonumber(clean, 16)
+    end
+    if not handle then
+        return { success = false, error = "Invalid handle", error_code = "INVALID_PARAMS" }
+    end
 
     local prefAddr = nil
     if address ~= nil then
