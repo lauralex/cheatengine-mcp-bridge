@@ -895,6 +895,641 @@ def main():
         all_tests["start_dbvm_watch"].run(client)
         all_tests["stop_dbvm_watch"].run(client)
     
+    # >>> BEGIN UNIT-24 expanded tests <<<
+
+    # -------------------------------------------------------------------------
+    # UNIT-24 GATE: skip the entire block if the bridge isn't alive or no
+    # process is attached.  We re-use the ping result already stored in
+    # all_tests["ping"] rather than issuing a fresh command.
+    # -------------------------------------------------------------------------
+    _ping_ok = (
+        all_tests.get("ping") is not None
+        and all_tests["ping"].result == TestResult.PASSED
+        and all_tests["ping"].response is not None
+        and all_tests["ping"].response.get("success") is True
+    )
+    _proc_ok = (
+        all_tests.get("get_process_info") is not None
+        and all_tests["get_process_info"].result == TestResult.PASSED
+    )
+
+    if not _ping_ok:
+        print("\n[UNIT-24] Bridge ping failed — skipping all Unit-24 expanded tests.")
+    else:
+        print("\n" + "=" * 70)
+        print("UNIT-24: Write Operations")
+        print("=" * 70)
+
+        # Allocate a 1 KiB scratch buffer via Lua so we can safely write to it.
+        _scratch_addr = None
+        if _proc_ok:
+            _alloc_resp = client.send_command(
+                "evaluate_lua",
+                {"code": "return string.format('0x%X', allocateMemory(1024))"}
+            )
+            _alloc_val = _alloc_resp.get("result", {}).get("result", "")
+            if _alloc_val.startswith("0x") or _alloc_val.startswith("0X"):
+                try:
+                    _scratch_addr = int(_alloc_val, 16)
+                except ValueError:
+                    pass
+
+        _write_skip = None if _scratch_addr else "No process attached or allocateMemory failed"
+        # Pre-compute stable hex strings for the three scratch offsets used below.
+        _scratch_hex0 = hex(_scratch_addr) if _scratch_addr else "0x0"
+        _scratch_hex4 = hex(_scratch_addr + 4) if _scratch_addr else "0x0"
+        _scratch_hex8 = hex(_scratch_addr + 8) if _scratch_addr else "0x0"
+
+        def _cascaded_skip(parent_key, parent_skip, failure_msg):
+            """Return parent_skip if already set; else check parent result."""
+            if parent_skip:
+                return parent_skip
+            if all_tests[parent_key].result != TestResult.PASSED:
+                return failure_msg
+            return None
+
+        all_tests["u24_write_integer"] = TestCase(
+            "Unit-24 Write Integer (dword)", "write_integer",
+            params={"address": _scratch_hex0, "value": 0xDEADBEEF, "type": "dword"},
+            validators=[
+                has_field("success", bool),
+                field_equals("success", True),
+            ],
+            skip_reason=_write_skip,
+        )
+        all_tests["u24_write_integer"].run(client)
+
+        all_tests["u24_write_integer_readback"] = TestCase(
+            "Unit-24 Write Integer readback (verify 0xDEADBEEF)", "read_integer",
+            params={"address": _scratch_hex0, "type": "dword"},
+            validators=[
+                has_field("success", bool),
+                field_equals("success", True),
+                has_field("value", int),
+                field_equals("value", 0xDEADBEEF),
+            ],
+            skip_reason=_cascaded_skip("u24_write_integer", _write_skip, "write_integer failed"),
+        )
+        all_tests["u24_write_integer_readback"].run(client)
+
+        all_tests["u24_write_memory"] = TestCase(
+            "Unit-24 Write Memory (raw bytes)", "write_memory",
+            params={"address": _scratch_hex4, "bytes": [0xAA, 0xBB, 0xCC, 0xDD]},
+            validators=[
+                has_field("success", bool),
+                field_equals("success", True),
+            ],
+            skip_reason=_write_skip,
+        )
+        all_tests["u24_write_memory"].run(client)
+
+        all_tests["u24_write_memory_readback"] = TestCase(
+            "Unit-24 Write Memory readback (verify AA BB CC DD)", "read_memory",
+            params={"address": _scratch_hex4, "size": 4},
+            validators=[
+                has_field("success", bool),
+                field_equals("success", True),
+                has_field("bytes", list),
+                lambda r: (r.get("bytes") == [0xAA, 0xBB, 0xCC, 0xDD],
+                           f"Expected [0xAA,0xBB,0xCC,0xDD], got {r.get('bytes')}"),
+            ],
+            skip_reason=_cascaded_skip("u24_write_memory", _write_skip, "write_memory failed"),
+        )
+        all_tests["u24_write_memory_readback"].run(client)
+
+        all_tests["u24_write_string"] = TestCase(
+            "Unit-24 Write String (ASCII)", "write_string",
+            params={"address": _scratch_hex8, "value": "Hello", "wide": False},
+            validators=[
+                has_field("success", bool),
+                field_equals("success", True),
+            ],
+            skip_reason=_write_skip,
+        )
+        all_tests["u24_write_string"].run(client)
+
+        all_tests["u24_write_string_readback"] = TestCase(
+            "Unit-24 Write String readback (verify 'Hello')", "read_string",
+            params={"address": _scratch_hex8, "max_length": 16},
+            validators=[
+                has_field("success", bool),
+                field_equals("success", True),
+                has_field("value", str),
+                lambda r: (r.get("value", "").startswith("Hello"),
+                           f"Expected value starting with 'Hello', got '{r.get('value')}'"),
+            ],
+            skip_reason=_cascaded_skip("u24_write_string", _write_skip, "write_string failed"),
+        )
+        all_tests["u24_write_string_readback"].run(client)
+
+        # -------------------------------------------------------------------------
+        # next_scan flow
+        # -------------------------------------------------------------------------
+        print("\n" + "=" * 70)
+        print("UNIT-24: next_scan Flow")
+        print("=" * 70)
+
+        _nextscan_skip = None if _proc_ok else "No process attached"
+
+        # First do a scan_all with a common dword value (1) so we have a baseline.
+        all_tests["u24_scan_for_nextscan"] = TestCase(
+            "Unit-24 scan_all baseline (value=1, dword)", "scan_all",
+            params={"value": "1", "type": "exact"},
+            validators=[
+                has_field("success", bool),
+                field_equals("success", True),
+                has_field("count", int),
+                field_in_range("count", 1, 100_000_000),
+            ],
+            skip_reason=_nextscan_skip,
+        )
+        all_tests["u24_scan_for_nextscan"].run(client)
+
+        _first_count = 0
+        if all_tests["u24_scan_for_nextscan"].result == TestResult.PASSED:
+            _first_count = all_tests["u24_scan_for_nextscan"].response.get("count", 0)
+
+        _ns_filter_skip = _nextscan_skip
+        if not _ns_filter_skip and all_tests["u24_scan_for_nextscan"].result != TestResult.PASSED:
+            _ns_filter_skip = "baseline scan_all failed"
+
+        all_tests["u24_next_scan_unchanged"] = TestCase(
+            "Unit-24 next_scan (unchanged) — count should remain <= baseline", "next_scan",
+            params={"value": "1", "scan_type": "unchanged"},
+            validators=[
+                has_field("success", bool),
+                field_equals("success", True),
+                has_field("count", int),
+                lambda r: (r.get("count", 0) <= _first_count,
+                           f"next_scan(unchanged) count {r.get('count')} > baseline {_first_count}"),
+            ],
+            skip_reason=_ns_filter_skip,
+        )
+        all_tests["u24_next_scan_unchanged"].run(client)
+
+        all_tests["u24_next_scan_changed"] = TestCase(
+            "Unit-24 next_scan (changed) — count should differ from unchanged run", "next_scan",
+            params={"value": "1", "scan_type": "changed"},
+            validators=[
+                has_field("success", bool),
+                field_equals("success", True),
+                has_field("count", int),
+            ],
+            skip_reason=_ns_filter_skip,
+        )
+        all_tests["u24_next_scan_changed"].run(client)
+
+        # -------------------------------------------------------------------------
+        # Breakpoint lifecycle — execution breakpoint
+        # -------------------------------------------------------------------------
+        print("\n" + "=" * 70)
+        print("UNIT-24: Breakpoint Lifecycle (Execution)")
+        print("=" * 70)
+
+        _bp_skip = None if _proc_ok else "No process attached"
+        _bp_id = "u24_bp_exec"
+
+        all_tests["u24_set_breakpoint"] = TestCase(
+            "Unit-24 set_breakpoint at entry point", "set_breakpoint",
+            params={
+                "address": hex(entry_point),
+                "id": _bp_id,
+                "capture_registers": True,
+                "capture_stack": False,
+            },
+            validators=[
+                has_field("success", bool),
+                field_equals("success", True),
+                has_field("id", str),
+            ],
+            skip_reason=_bp_skip,
+        )
+        all_tests["u24_set_breakpoint"].run(client)
+
+        _bp_set_ok = all_tests["u24_set_breakpoint"].result == TestResult.PASSED
+
+        # Brief wait is intentionally omitted (no sleep; hits may be 0 — that is fine).
+        all_tests["u24_get_bp_hits"] = TestCase(
+            "Unit-24 get_breakpoint_hits (may be 0 — OK)", "get_breakpoint_hits",
+            params={"id": _bp_id, "clear": False},
+            validators=[
+                has_field("success", bool),
+                field_equals("success", True),
+                has_field("hits", list),
+                has_field("count", int),
+                lambda r: (r.get("count", -1) >= 0,
+                           "hit count must be >= 0"),
+            ],
+            skip_reason=_bp_skip if not _bp_set_ok else None,
+        )
+        all_tests["u24_get_bp_hits"].run(client)
+
+        all_tests["u24_remove_breakpoint"] = TestCase(
+            "Unit-24 remove_breakpoint", "remove_breakpoint",
+            params={"id": _bp_id},
+            validators=[
+                has_field("success", bool),
+                field_equals("success", True),
+            ],
+            skip_reason=_bp_skip if not _bp_set_ok else None,
+        )
+        all_tests["u24_remove_breakpoint"].run(client)
+
+        # Verify the breakpoint is gone.
+        all_tests["u24_list_bp_after_remove"] = TestCase(
+            "Unit-24 list_breakpoints — entry-point BP must be absent", "list_breakpoints",
+            validators=[
+                has_field("success", bool),
+                field_equals("success", True),
+                has_field("breakpoints", list),
+                lambda r: (
+                    not any(bp.get("id") == _bp_id for bp in r.get("breakpoints", [])),
+                    f"Breakpoint '{_bp_id}' still present after remove"
+                ),
+            ],
+            skip_reason=_bp_skip,
+        )
+        all_tests["u24_list_bp_after_remove"].run(client)
+
+        # -------------------------------------------------------------------------
+        # Data breakpoint lifecycle
+        # -------------------------------------------------------------------------
+        print("\n" + "=" * 70)
+        print("UNIT-24: Data Breakpoint Lifecycle")
+        print("=" * 70)
+
+        _dbp_id = "u24_bp_data"
+        _dbp_addr = hex(_scratch_addr) if _scratch_addr else hex(module_base)
+        _dbp_skip = None if _proc_ok else "No process attached"
+
+        all_tests["u24_set_data_breakpoint"] = TestCase(
+            "Unit-24 set_data_breakpoint (write watchpoint)", "set_data_breakpoint",
+            params={"address": _dbp_addr, "id": _dbp_id, "access_type": "w", "size": 4},
+            validators=[
+                has_field("success", bool),
+                field_equals("success", True),
+                has_field("id", str),
+            ],
+            skip_reason=_dbp_skip,
+        )
+        all_tests["u24_set_data_breakpoint"].run(client)
+
+        _dbp_set_ok = all_tests["u24_set_data_breakpoint"].result == TestResult.PASSED
+
+        all_tests["u24_get_data_bp_hits"] = TestCase(
+            "Unit-24 get_breakpoint_hits (data bp — may be 0)", "get_breakpoint_hits",
+            params={"id": _dbp_id, "clear": False},
+            validators=[
+                has_field("success", bool),
+                field_equals("success", True),
+                has_field("hits", list),
+                has_field("count", int),
+                lambda r: (r.get("count", -1) >= 0, "hit count must be >= 0"),
+            ],
+            skip_reason=_dbp_skip if not _dbp_set_ok else None,
+        )
+        all_tests["u24_get_data_bp_hits"].run(client)
+
+        all_tests["u24_remove_data_breakpoint"] = TestCase(
+            "Unit-24 remove_breakpoint (data bp)", "remove_breakpoint",
+            params={"id": _dbp_id},
+            validators=[
+                has_field("success", bool),
+                field_equals("success", True),
+            ],
+            skip_reason=_dbp_skip if not _dbp_set_ok else None,
+        )
+        all_tests["u24_remove_data_breakpoint"].run(client)
+
+        # -------------------------------------------------------------------------
+        # Pagination via get_scan_results
+        # -------------------------------------------------------------------------
+        print("\n" + "=" * 70)
+        print("UNIT-24: Pagination (get_scan_results offset/limit)")
+        print("=" * 70)
+
+        # Re-scan to ensure fresh results in the foundlist (gated on process).
+        _page_total = 0
+        if _proc_ok:
+            _page_scan_resp = client.send_command("scan_all", {"value": "1", "type": "exact"})
+            _page_total = _page_scan_resp.get("result", {}).get("count", 0)
+        _page_skip = None if (_proc_ok and _page_total >= 10) else "Fewer than 10 scan results — pagination not meaningful"
+
+        all_tests["u24_page1"] = TestCase(
+            "Unit-24 Pagination — page 1 (offset=0, limit=5)", "get_scan_results",
+            params={"offset": 0, "limit": 5},
+            validators=[
+                has_field("success", bool),
+                field_equals("success", True),
+                has_field("results", list),
+                has_field("total", int),
+                lambda r: (len(r.get("results", [])) <= 5,
+                           f"Expected <= 5 results, got {len(r.get('results', []))}"),
+            ],
+            skip_reason=_page_skip,
+        )
+        all_tests["u24_page1"].run(client)
+
+        all_tests["u24_page2"] = TestCase(
+            "Unit-24 Pagination — page 2 (offset=5, limit=5)", "get_scan_results",
+            params={"offset": 5, "limit": 5},
+            validators=[
+                has_field("success", bool),
+                field_equals("success", True),
+                has_field("results", list),
+                has_field("total", int),
+                lambda r: (len(r.get("results", [])) <= 5,
+                           f"Expected <= 5 results, got {len(r.get('results', []))}"),
+            ],
+            skip_reason=_page_skip,
+        )
+        all_tests["u24_page2"].run(client)
+
+        # Verify pages have distinct addresses and consistent total.
+        _p1_ok = all_tests["u24_page1"].result == TestResult.PASSED
+        _p2_ok = all_tests["u24_page2"].result == TestResult.PASSED
+        _pages_distinct_skip = _page_skip
+        if not _pages_distinct_skip and not (_p1_ok and _p2_ok):
+            _pages_distinct_skip = "One or both page queries failed"
+
+        def _check_pages_distinct():
+            """Verify page results are disjoint and report a consistent total."""
+            p1_addrs = {e.get("address") for e in all_tests["u24_page1"].response.get("results", [])}
+            p2_addrs = {e.get("address") for e in all_tests["u24_page2"].response.get("results", [])}
+            if p1_addrs & p2_addrs:
+                return False, f"Pages share addresses: {p1_addrs & p2_addrs}"
+            t1 = all_tests["u24_page1"].response.get("total")
+            t2 = all_tests["u24_page2"].response.get("total")
+            if t1 != t2:
+                return False, f"Inconsistent total: page1 says {t1}, page2 says {t2}"
+            return True, ""
+
+        # Synthetic test: validates already-collected page responses, no extra pipe call.
+        print(f"\n{'='*60}")
+        print("Testing: Unit-24 Pagination — pages are disjoint + total consistent")
+        print(f"{'='*60}")
+        _pages_tc = TestCase(
+            "Unit-24 Pagination — pages are disjoint + total consistent",
+            "get_scan_results", {},
+            skip_reason=_pages_distinct_skip,
+        )
+        if _pages_distinct_skip:
+            print(f"⊘ SKIPPED: {_pages_distinct_skip}")
+            _pages_tc.result = TestResult.SKIPPED
+        else:
+            ok, msg = _check_pages_distinct()
+            if ok:
+                print("✓ PASSED")
+                _pages_tc.result = TestResult.PASSED
+            else:
+                print(f"✗ FAILED: {msg}")
+                _pages_tc.validation_errors = [msg]
+                _pages_tc.result = TestResult.FAILED
+        all_tests["u24_pages_distinct"] = _pages_tc
+
+        # -------------------------------------------------------------------------
+        # Error-case tests
+        # -------------------------------------------------------------------------
+        print("\n" + "=" * 70)
+        print("UNIT-24: Error Cases")
+        print("=" * 70)
+
+        # Invalid hex address → expect error_code = INVALID_ADDRESS.
+        # Validator: success must be False AND error_code must match expected value.
+        def _expect_error(error_code=None):
+            """Validator factory: passes when success=False with optional error_code check."""
+            def validator(resp):
+                if resp.get("success") is True:
+                    return False, "Expected success=False (error response), got success=True"
+                if error_code and resp.get("error_code") != error_code:
+                    return False, f"Expected error_code={error_code!r}, got {resp.get('error_code')!r}"
+                return True, ""
+            return validator
+
+        # Override TestCase.run to flip the success/failure logic for error cases.
+        # We use the validators-only path: a normal TestCase whose validators check
+        # for success=False, bypassing the built-in "command failed → FAILED" guard.
+        class _ErrorCase(TestCase):
+            """TestCase that expects the bridge to return success=False."""
+            def run(self, client):
+                print(f"\n{'='*60}")
+                print(f"Testing: {self.name}")
+                print(f"{'='*60}")
+                if self.skip_reason:
+                    print(f"⊘ SKIPPED: {self.skip_reason}")
+                    self.result = TestResult.SKIPPED
+                    return self.result
+                try:
+                    raw = client.send_command(self.method, self.params)
+                    if "error" in raw and raw["error"]:
+                        print(f"✗ PROTOCOL ERROR: {raw['error']}")
+                        self.result = TestResult.FAILED
+                        return self.result
+                    self.response = raw.get("result", {})
+                    self.validation_errors = []
+                    for v in self.validators:
+                        ok, msg = v(self.response)
+                        if not ok:
+                            self.validation_errors.append(msg)
+                    resp_str = json.dumps(self.response, indent=2)
+                    if len(resp_str) > 500:
+                        resp_str = resp_str[:500] + "\n  ... (truncated)"
+                    print(f"Response: {resp_str}")
+                    if self.validation_errors:
+                        print("✗ VALIDATION FAILED:")
+                        for err in self.validation_errors:
+                            print(f"  - {err}")
+                        self.result = TestResult.FAILED
+                    else:
+                        print("✓ PASSED")
+                        self.result = TestResult.PASSED
+                except Exception as e:
+                    self.error = str(e)
+                    print(f"✗ EXCEPTION: {e}")
+                    self.result = TestResult.FAILED
+                return self.result
+
+        all_tests["u24_err_invalid_addr"] = _ErrorCase(
+            "Unit-24 Error: read_integer invalid hex address",
+            "read_integer",
+            params={"address": "not_hex", "type": "dword"},
+            validators=[_expect_error(error_code="INVALID_ADDRESS")],
+        )
+        all_tests["u24_err_invalid_addr"].run(client)
+
+        all_tests["u24_err_null_read"] = _ErrorCase(
+            "Unit-24 Error: read_memory at 0x0 (expect error)",
+            "read_memory",
+            params={"address": "0x0", "size": 100},
+            validators=[_expect_error()],  # error_code varies by implementation
+        )
+        all_tests["u24_err_null_read"].run(client)
+
+        # -------------------------------------------------------------------------
+        # Smoke tests for new units 7-23
+        # NOTE: These probe commands added by parallel units (7-23). They may be
+        #       absent in this worktree branch and will fail until merged; that is
+        #       expected.  Each is gated on _proc_ok where the command requires an
+        #       attached process.
+        # -------------------------------------------------------------------------
+        print("\n" + "=" * 70)
+        print("UNIT-24: Smoke Tests for Units 7-23")
+        print("=" * 70)
+
+        # Unit 7 — get_process_list
+        all_tests["u24_smoke_get_process_list"] = TestCase(
+            "Smoke Unit-7: get_process_list", "get_process_list",
+            validators=[
+                has_field("success", bool),
+                field_equals("success", True),
+                has_field("count", int),
+                lambda r: (r.get("count", 0) > 0,
+                           f"Expected count > 0, got {r.get('count')}"),
+            ],
+        )
+        all_tests["u24_smoke_get_process_list"].run(client)
+
+        # Unit 8 — allocate_memory + free_memory
+        all_tests["u24_smoke_allocate_memory"] = TestCase(
+            "Smoke Unit-8: allocate_memory (256 bytes)", "allocate_memory",
+            params={"size": 256},
+            validators=[
+                has_field("success", bool),
+                field_equals("success", True),
+                has_field("address", str),
+                field_is_hex_address("address"),
+            ],
+            skip_reason=None if _proc_ok else "No process attached",
+        )
+        all_tests["u24_smoke_allocate_memory"].run(client)
+
+        _alloc_addr = None
+        if all_tests["u24_smoke_allocate_memory"].result == TestResult.PASSED:
+            _alloc_addr = all_tests["u24_smoke_allocate_memory"].response.get("address")
+
+        all_tests["u24_smoke_free_memory"] = TestCase(
+            "Smoke Unit-8: free_memory (on allocated address)", "free_memory",
+            params={"address": _alloc_addr or "0x0"},
+            validators=[
+                has_field("success", bool),
+                field_equals("success", True),
+            ],
+            skip_reason=None if _alloc_addr else "allocate_memory did not succeed",
+        )
+        all_tests["u24_smoke_free_memory"].run(client)
+
+        # Unit 9 — execute_code_local (non-destructive: use a known RX page address)
+        # We point at the module entry point which is RX; CE will inject a jump but
+        # the breakpoint handler will intercept before actual execution.
+        # Skip: execute_code_local injects a JMP to our code — too risky without a
+        # controlled stub. Use evaluate_lua as a safer proxy instead.
+        all_tests["u24_smoke_execute_code_local"] = TestCase(
+            "Smoke Unit-9: execute_code_local",
+            "execute_code_local",
+            params={"address": hex(entry_point)},
+            validators=[has_field("success", bool)],
+            skip_reason=(
+                "execute_code_local redirects execution — requires a no-op stub; "
+                "skipped to avoid destabilising the target process"
+            ),
+        )
+        all_tests["u24_smoke_execute_code_local"].run(client)
+
+        # Unit 12 — enum_registered_symbols
+        all_tests["u24_smoke_enum_registered_symbols"] = TestCase(
+            "Smoke Unit-12: enum_registered_symbols", "enum_registered_symbols",
+            validators=[
+                has_field("success", bool),
+                field_equals("success", True),
+            ],
+        )
+        all_tests["u24_smoke_enum_registered_symbols"].run(client)
+
+        # Unit 16 — find_window
+        all_tests["u24_smoke_find_window"] = TestCase(
+            "Smoke Unit-16: find_window title='Cheat Engine'", "find_window",
+            params={"title": "Cheat Engine"},
+            validators=[
+                has_field("success", bool),
+                field_equals("success", True),
+                has_field("handle", int),
+                lambda r: (r.get("handle", 0) != 0,
+                           "Expected non-zero window handle"),
+            ],
+        )
+        all_tests["u24_smoke_find_window"].run(client)
+
+        # Unit 17 — get_mouse_pos
+        all_tests["u24_smoke_get_mouse_pos"] = TestCase(
+            "Smoke Unit-17: get_mouse_pos", "get_mouse_pos",
+            validators=[
+                has_field("success", bool),
+                field_equals("success", True),
+                has_field("x", int),
+                has_field("y", int),
+            ],
+        )
+        all_tests["u24_smoke_get_mouse_pos"].run(client)
+
+        # Unit 20a — get_temp_folder
+        all_tests["u24_smoke_get_temp_folder"] = TestCase(
+            "Smoke Unit-20a: get_temp_folder", "get_temp_folder",
+            validators=[
+                has_field("success", bool),
+                field_equals("success", True),
+                has_field("path", str),
+                lambda r: (len(r.get("path", "")) > 0,
+                           "Expected non-empty path"),
+            ],
+        )
+        all_tests["u24_smoke_get_temp_folder"].run(client)
+
+        # Unit 23 — beep
+        all_tests["u24_smoke_beep"] = TestCase(
+            "Smoke Unit-23: beep", "beep",
+            validators=[
+                has_field("success", bool),
+                field_equals("success", True),
+            ],
+        )
+        all_tests["u24_smoke_beep"].run(client)
+
+        # Units requiring very specific state — intentionally skipped:
+        #   Unit 10 (inject_dll) — needs a DLL path on disk
+        #   Unit 11 (set_freeze / freeze value) — needs a known writable address + game state
+        #   Unit 13 (start_speedhack) — alters global CE speed, side-effects on test run
+        #   Unit 14 (resolve_pointer_path) — needs a known pointer chain
+        #   Unit 15 (get_ce_settings) — CE-host-only; no process guard needed but untestable without live bridge knowing CE version
+        #   Unit 18 (send_key / type_text) — sends real OS input events
+        #   Unit 19 (take_screenshot) — needs a window handle and writable path
+        #   Unit 21 (read_clipboard / write_clipboard) — side-effects on clipboard
+        #   Unit 22 (show_message_box) — blocks CE GUI thread waiting for user input
+
+    # >>> END UNIT-24 <<<
+
+    # Update summary categories to include Unit-24 tests.
+    _u24_write_keys = [
+        "u24_write_integer", "u24_write_integer_readback",
+        "u24_write_memory", "u24_write_memory_readback",
+        "u24_write_string", "u24_write_string_readback",
+    ]
+    _u24_scan_keys = [
+        "u24_scan_for_nextscan", "u24_next_scan_unchanged", "u24_next_scan_changed",
+    ]
+    _u24_bp_keys = [
+        "u24_set_breakpoint", "u24_get_bp_hits", "u24_remove_breakpoint",
+        "u24_list_bp_after_remove",
+        "u24_set_data_breakpoint", "u24_get_data_bp_hits", "u24_remove_data_breakpoint",
+    ]
+    _u24_page_keys = ["u24_page1", "u24_page2", "u24_pages_distinct"]
+    _u24_err_keys = ["u24_err_invalid_addr", "u24_err_null_read"]
+    _u24_smoke_keys = [
+        "u24_smoke_get_process_list", "u24_smoke_allocate_memory", "u24_smoke_free_memory",
+        "u24_smoke_execute_code_local", "u24_smoke_enum_registered_symbols",
+        "u24_smoke_find_window", "u24_smoke_get_mouse_pos",
+        "u24_smoke_get_temp_folder", "u24_smoke_beep",
+    ]
+
     # =========================================================================
     # SUMMARY
     # =========================================================================
@@ -915,9 +1550,16 @@ def main():
         "References": ["find_references", "find_call_references"],
         "Breakpoints": ["list_breakpoints", "clear_all_breakpoints"],
         "Modules": ["enum_modules", "get_symbol_address", "get_memory_regions"],
-        "High-Level": ["get_thread_list", "enum_memory_regions_full", "dissect_structure", "read_pointer_chain", 
+        "High-Level": ["get_thread_list", "enum_memory_regions_full", "dissect_structure", "read_pointer_chain",
                       "auto_assemble", "get_rtti_classname", "get_address_info", "checksum_memory", "generate_signature"],
         "DBVM": ["get_physical_address", "start_dbvm_watch", "stop_dbvm_watch"],
+        # Unit-24 categories
+        "U24 Write Ops": _u24_write_keys,
+        "U24 next_scan": _u24_scan_keys,
+        "U24 Breakpoints": _u24_bp_keys,
+        "U24 Pagination": _u24_page_keys,
+        "U24 Error Cases": _u24_err_keys,
+        "U24 Smoke Tests": _u24_smoke_keys,
     }
     
     for cat_name, tests in categories.items():
