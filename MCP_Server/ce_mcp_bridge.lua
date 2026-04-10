@@ -338,12 +338,15 @@ local function cleanupZombieState()
         end
     end
 
-    -- 7. Cleanup Unit-14 section handles (createSection return values)
+    -- 7. Drop tracked Unit-14 section handles.
+    -- CE's Lua API exposes createSection + mapViewOfSection but has no
+    -- published close/destroy for the returned handle, so the kernel
+    -- object stays alive until the CE process exits. Best we can do on
+    -- script reload is forget the tracking entries so the table doesn't
+    -- grow unbounded across load cycles.
     if serverState.sections then
-        for id, handle in pairs(serverState.sections) do
-            if handle then
-                pcall(function() closeHandle(handle) end)
-            end
+        for id, _ in pairs(serverState.sections) do
+            serverState.sections[id] = nil
         end
     end
 
