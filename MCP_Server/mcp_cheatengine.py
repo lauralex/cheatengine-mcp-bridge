@@ -1222,6 +1222,7 @@ def reinitialize_symbol_handler() -> str:
     return format_result(ce_client.send_command("reinitialize_symbol_handler"))
 # >>> END UNIT-12 <<<
 
+@mcp.tool()
 def assemble_instruction(
     line: str,
     address: str = None,

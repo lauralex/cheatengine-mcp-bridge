@@ -26,6 +26,12 @@ local serverState = {
     active_watches = {}    -- DBVM watch IDs for hypervisor-level tracing
 }
 
+-- Unit-21 kernel/DBVM: MDL handles for active mapMemory() calls, keyed by
+-- mapped-address hex string. Declared here (module scope) so cleanupZombieState
+-- can release leaked mappings on script reload — Lua lexical scoping requires
+-- the local to exist before cleanupZombieState is defined.
+local mappedMemoryMDL = {}
+
 -- ============================================================================
 -- UTILITY FUNCTIONS
 -- ============================================================================
@@ -299,11 +305,26 @@ local function cleanupZombieState()
         serverState.scan_foundlist = nil
     end
 
+    -- 4. Release any leaked mapMemory() MDL handles (Unit-21)
+    local mdl_cleaned = 0
+    for key, mdl in pairs(mappedMemoryMDL) do
+        local addr = getAddressSafe(key) or tonumber(key, 16)
+        if addr then
+            local ok = pcall(unmapMemory, addr, mdl)
+            if ok then mdl_cleaned = mdl_cleaned + 1 end
+        end
+        mappedMemoryMDL[key] = nil
+    end
+
     -- Reset all tracking tables
     serverState.breakpoints = {}
     serverState.breakpoint_hits = {}
     serverState.hw_bp_slots = {}
     serverState.active_watches = {}
+
+    if mdl_cleaned > 0 then
+        log(string.format("Released %d leaked mapMemory MDL handle(s)", mdl_cleaned))
+    end
     
     if cleaned.breakpoints > 0 or cleaned.dbvm_watches > 0 or cleaned.scans > 0 then
         log(string.format("Cleaned: %d breakpoints, %d DBVM watches, %d scans",
@@ -4956,10 +4977,8 @@ end
 -- Requires DBK kernel driver and/or DBVM hypervisor to be loaded.
 -- ============================================================================
 
--- MDL handles for active mapMemory() calls, keyed by mapped-address hex string.
--- mapMemory() returns (address, mdl); unmapMemory() needs the mdl to release it.
--- Cleared by cleanupZombieState() on bridge stop/restart.
-local mappedMemoryMDL = {}
+-- mappedMemoryMDL is declared at module scope (near serverState) so
+-- cleanupZombieState() can release leaked MDL handles on script reload.
 
 local function dbkNotLoadedError()
     return {
