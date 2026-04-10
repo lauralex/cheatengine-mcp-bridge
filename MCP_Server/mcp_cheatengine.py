@@ -300,14 +300,28 @@ def get_process_info() -> str:
     return format_result(ce_client.send_command("get_process_info"))
 
 @mcp.tool()
-def enum_modules() -> str:
-    """List all loaded modules (DLLs) with their base addresses and sizes."""
-    return format_result(ce_client.send_command("enum_modules"))
+def enum_modules(offset: int = 0, limit: int = 100) -> str:
+    """List all loaded modules (DLLs) with their base addresses and sizes.
+
+    Args:
+        offset: Start index for pagination (default 0).
+        limit: Maximum modules to return (default 100, max 10000).
+
+    Returns JSON with: success, total, offset, limit, returned, modules.
+    """
+    return format_result(ce_client.send_command("enum_modules", {"offset": offset, "limit": limit}))
 
 @mcp.tool()
-def get_thread_list() -> str:
-    """Get list of threads in the attached process."""
-    return format_result(ce_client.send_command("get_thread_list"))
+def get_thread_list(offset: int = 0, limit: int = 100) -> str:
+    """Get list of threads in the attached process.
+
+    Args:
+        offset: Start index for pagination (default 0).
+        limit: Maximum threads to return (default 100, max 10000).
+
+    Returns JSON with: success, total, offset, limit, returned, threads.
+    """
+    return format_result(ce_client.send_command("get_thread_list", {"offset": offset, "limit": limit}))
 
 @mcp.tool()
 def get_symbol_address(symbol: str) -> str:
@@ -388,9 +402,18 @@ def scan_all(value: str, type: str = "exact", protection: str = "+W-C") -> str:
     return format_result(ce_client.send_command("scan_all", {"value": value, "type": type, "protection": protection}))
 
 @mcp.tool()
-def get_scan_results(max: int = 100) -> str:
-    """Get results from the last 'scan_all' operation. Use 'max' to limit output."""
-    return format_result(ce_client.send_command("get_scan_results", {"max": max}))
+def get_scan_results(offset: int = 0, limit: int = 100, max: int = None) -> str:
+    """Get results from the last 'scan_all' operation.
+
+    Args:
+        offset: Start index for pagination (default 0).
+        limit: Maximum results to return (default 100, max 10000). Preferred over 'max'.
+        max: Deprecated alias for 'limit'. Use 'limit' instead.
+
+    Returns JSON with: success, total, offset, limit, returned, results.
+    """
+    return format_result(ce_client.send_command("get_scan_results", {"offset": offset, "limit": limit, "max": max}))
+
 @mcp.tool()
 def next_scan(value: str, scan_type: str = "exact") -> str:
     """Next scan to filter results. Types: exact, increased, decreased, changed, unchanged, bigger, smaller."""
@@ -433,16 +456,33 @@ def get_memory_regions(max: int = 100) -> str:
     return format_result(ce_client.send_command("get_memory_regions", {"max": max}))
 
 @mcp.tool()
-def enum_memory_regions_full(max: int = 500) -> str:
-    """Enumerate ALL memory regions in the process (Native EnumMemoryRegions)."""
-    return format_result(ce_client.send_command("enum_memory_regions_full", {"max": max}))
+def enum_memory_regions_full(offset: int = 0, limit: int = 100, max: int = None) -> str:
+    """Enumerate ALL memory regions in the process (Native EnumMemoryRegions).
+
+    Args:
+        offset: Start index for pagination (default 0).
+        limit: Maximum regions to return (default 100, max 10000). Preferred over 'max'.
+        max: Deprecated alias for 'limit'. Use 'limit' instead.
+
+    Returns JSON with: success, total, offset, limit, returned, regions.
+    """
+    return format_result(ce_client.send_command("enum_memory_regions_full", {"offset": offset, "limit": limit, "max": max}))
 
 # --- ANALYSIS & DISASSEMBLY ---
 
 @mcp.tool()
-def disassemble(address: str, count: int = 20) -> str:
-    """Disassemble instructions starting at an address."""
-    return format_result(ce_client.send_command("disassemble", {"address": address, "count": count}))
+def disassemble(address: str, count: int = 20, offset: int = 0, limit: int = 100) -> str:
+    """Disassemble instructions starting at an address.
+
+    Args:
+        address: Target address (hex string or symbol).
+        count: Number of instructions to generate (default 20).
+        offset: Start index within the generated list for pagination (default 0).
+        limit: Maximum instructions to return (default 100, max 10000).
+
+    Returns JSON with: success, start_address, total, offset, limit, returned, instructions.
+    """
+    return format_result(ce_client.send_command("disassemble", {"address": address, "count": count, "offset": offset, "limit": limit}))
 
 @mcp.tool()
 def get_instruction_info(address: str) -> str:
@@ -460,14 +500,30 @@ def analyze_function(address: str) -> str:
     return format_result(ce_client.send_command("analyze_function", {"address": address}))
 
 @mcp.tool()
-def find_references(address: str, limit: int = 50) -> str:
-    """Find instructions that access (reference) this address."""
-    return format_result(ce_client.send_command("find_references", {"address": address, "limit": limit}))
+def find_references(address: str, offset: int = 0, limit: int = 50) -> str:
+    """Find instructions that access (reference) this address.
+
+    Args:
+        address: Target address to find references to.
+        offset: Start index for pagination (default 0).
+        limit: Maximum references to return (default 50, max 10000).
+
+    Returns JSON with: success, target, total, offset, limit, returned, references, arch.
+    """
+    return format_result(ce_client.send_command("find_references", {"address": address, "offset": offset, "limit": limit}))
 
 @mcp.tool()
-def find_call_references(function_address: str, limit: int = 100) -> str:
-    """Find all locations that CALL this function."""
-    return format_result(ce_client.send_command("find_call_references", {"address": function_address, "limit": limit}))
+def find_call_references(function_address: str, offset: int = 0, limit: int = 100) -> str:
+    """Find all locations that CALL this function.
+
+    Args:
+        function_address: Address of the function to find callers of.
+        offset: Start index for pagination (default 0).
+        limit: Maximum callers to return (default 100, max 10000).
+
+    Returns JSON with: success, function_address, total, offset, limit, returned, callers.
+    """
+    return format_result(ce_client.send_command("find_call_references", {"address": function_address, "offset": offset, "limit": limit}))
 
 @mcp.tool()
 def dissect_structure(address: str, size: int = 256) -> str:
@@ -513,9 +569,18 @@ def clear_all_breakpoints() -> str:
     return format_result(ce_client.send_command("clear_all_breakpoints"))
 
 @mcp.tool()
-def get_breakpoint_hits(id: str = None, clear: bool = False) -> str:
-    """Get hits for a specific breakpoint ID (or all if None). Set clear=True to flush buffer."""
-    return format_result(ce_client.send_command("get_breakpoint_hits", {"id": id, "clear": clear}))
+def get_breakpoint_hits(id: str = None, clear: bool = False, offset: int = 0, limit: int = 100) -> str:
+    """Get hits for a specific breakpoint ID (or all if None). Set clear=True to flush buffer.
+
+    Args:
+        id: Breakpoint ID to query, or None for all breakpoints.
+        clear: If True, flush the hit buffer after reading (default False).
+        offset: Start index for pagination (default 0).
+        limit: Maximum hits to return (default 100, max 10000).
+
+    Returns JSON with: success, total, offset, limit, returned, hits.
+    """
+    return format_result(ce_client.send_command("get_breakpoint_hits", {"id": id, "clear": clear, "offset": offset, "limit": limit}))
 
 # --- DBVM / HYPERVISOR TOOLS (Ring -1) ---
 
