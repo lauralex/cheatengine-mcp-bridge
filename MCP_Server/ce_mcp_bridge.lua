@@ -4039,7 +4039,13 @@ end
 -- Shared helper: parse a hex window-handle string into a number.
 -- Returns the number, or nil if the string is missing/invalid.
 local function parseHandle(hexStr)
-    return tonumber(hexStr, 16)
+    if type(hexStr) == "number" then return hexStr end
+    if type(hexStr) ~= "string" then return nil end
+    -- Accept both "0x1234" and bare "1234" — Lua's tonumber with an explicit
+    -- base=16 rejects a "0x" prefix (it sees 'x' as a non-hex digit), so we
+    -- strip it first. Callers feed us the output of toHex() which has 0x.
+    local clean = hexStr:gsub("^0[xX]", "")
+    return tonumber(clean, 16)
 end
 
 local function cmd_find_window(params)
