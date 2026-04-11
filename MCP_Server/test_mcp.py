@@ -1334,13 +1334,21 @@ def main():
         print("UNIT-24: Error Cases")
         print("=" * 70)
 
-        # Invalid hex address → expect error_code = INVALID_ADDRESS.
-        # Validator: success must be False AND error_code must match expected value.
+        # Error-response validator.
+        # Required: success=False AND error_code present (v12 convention).
+        # Optional: error_code equals a specific enum value.
+        # The error_code-presence check catches a subtle class of bug the
+        # v12 overhaul was designed to prevent: handlers returning
+        # {success:false, error:"..."} without the structured error_code
+        # field. Any existing _ErrorCase whose handler drops error_code
+        # will now fail here.
         def _expect_error(error_code=None):
-            """Validator factory: passes when success=False with optional error_code check."""
+            """Validator factory: passes when success=False with error_code present."""
             def validator(resp):
                 if resp.get("success") is True:
                     return False, "Expected success=False (error response), got success=True"
+                if "error_code" not in resp:
+                    return False, "success=False but missing required error_code field"
                 if error_code and resp.get("error_code") != error_code:
                     return False, f"Expected error_code={error_code!r}, got {resp.get('error_code')!r}"
                 return True, ""
@@ -1398,10 +1406,10 @@ def main():
         all_tests["u24_err_invalid_addr"].run(client)
 
         all_tests["u24_err_null_read"] = _ErrorCase(
-            "Unit-24 Error: read_memory at 0x0 (expect error)",
+            "Unit-24 Error: read_memory at 0x0 (expect NOT_FOUND)",
             "read_memory",
             params={"address": "0x0", "size": 100},
-            validators=[_expect_error()],  # error_code varies by implementation
+            validators=[_expect_error(error_code="NOT_FOUND")],
         )
         all_tests["u24_err_null_read"].run(client)
 
@@ -1560,10 +1568,10 @@ def main():
 
         # Expected-error test: use _ErrorCase because regular TestCase auto-fails on success=false.
         all_tests["ext_poll_dbvm_watch_no_active"] = _ErrorCase(
-            "Base poll_dbvm_watch with no active watch — expect error",
+            "Base poll_dbvm_watch with no active watch — expect NOT_FOUND",
             "poll_dbvm_watch",
             params={"address": hex(module_base)},
-            validators=[_expect_error()],
+            validators=[_expect_error(error_code="NOT_FOUND")],
             skip_reason=None if _proc_ok else "No process attached",
         )
         all_tests["ext_poll_dbvm_watch_no_active"].run(client)
@@ -1780,10 +1788,10 @@ def main():
         # aob_scan_unique with a very common pattern is expected to fail
         # (multiple matches) — use _ErrorCase so success=false passes.
         all_tests["ext_u15_aob_scan_unique"] = _ErrorCase(
-            "Unit-15: aob_scan_unique (x64 prologue — expect non-unique → error)",
+            "Unit-15: aob_scan_unique (x64 prologue — expect INVALID_PARAMS non-unique)",
             "aob_scan_unique",
             params={"pattern": "48 89 5C 24"},
-            validators=[_expect_error()],
+            validators=[_expect_error(error_code="INVALID_PARAMS")],
             skip_reason=None if _proc_ok else "No process attached",
         )
         all_tests["ext_u15_aob_scan_unique"].run(client)
@@ -2337,12 +2345,12 @@ def main():
         # aob_scan_module_unique: common prologue is usually non-unique → expect
         # success=false with "not unique" style error. Use _ErrorCase.
         all_tests["ext_u15_aob_scan_module_unique_non_unique"] = _ErrorCase(
-            "Unit-15: aob_scan_module_unique on common prologue (expect non-unique)",
+            "Unit-15: aob_scan_module_unique on common prologue (expect INVALID_PARAMS)",
             "aob_scan_module_unique",
             params={"pattern": "48 89 5C 24",
                     "module_name": _ext_u15_module_name or "ntdll.dll",
                     "protection": "+X"},
-            validators=[_expect_error()],
+            validators=[_expect_error(error_code="INVALID_PARAMS")],
             skip_reason=None if _proc_ok else "No process attached",
         )
         all_tests["ext_u15_aob_scan_module_unique_non_unique"].run(client)
@@ -2452,6 +2460,243 @@ def main():
                      "wparam": 0, "lparam": 0},
              validators=[has_field("success", bool)],
              skip_reason="No window handle discovered" if not _u16_handle else None)
+
+        # =====================================================================
+        # ERROR-PATH COVERAGE (Tier 1)
+        # =====================================================================
+        # Systematic bad-case tests. Every test here asserts success=False
+        # with a specific error_code from the v12 enum. The tightened
+        # _expect_error() validator now ALSO requires error_code presence
+        # by default, so these tests catch handlers that forget it.
+        #
+        # Coverage by enum value:
+        #   INVALID_ADDRESS  — every address-taking handler on "not_hex"
+        #   INVALID_PARAMS   — wrong-typed / missing required fields
+        #   NOT_FOUND        — nonexistent IDs, unknown names, stale refs
+        #   OUT_OF_RESOURCES — hardware BP slot exhaustion
+        #   DBK_NOT_LOADED   — implicit in the DBK skip tests; verified
+        #                      structurally via _u21_skip
+        #   NO_PROCESS       — unreachable when a process IS attached;
+        #                      verified structurally via requireProcess()
+        #                      guards in the Lua layer (32 call sites)
+        #   CE_API_UNAVAILABLE / INTERNAL_ERROR — non-deterministic
+        #
+        # Note: these tests run AFTER all resource-creating tests, so they
+        # don't collide with the persistent scan names, structure IDs,
+        # memory record IDs, breakpoint IDs, or symbol names used earlier.
+
+        # --- INVALID_ADDRESS coverage across the write path ------------------
+        all_tests["err_write_integer_invalid_addr"] = _ErrorCase(
+            "Err: write_integer rejects non-hex address",
+            "write_integer",
+            params={"address": "not_hex", "value": 0, "type": "dword"},
+            validators=[_expect_error(error_code="INVALID_ADDRESS")],
+            skip_reason=None if _proc_ok else "No process attached",
+        )
+        all_tests["err_write_integer_invalid_addr"].run(client)
+
+        all_tests["err_write_memory_invalid_addr"] = _ErrorCase(
+            "Err: write_memory rejects non-hex address",
+            "write_memory",
+            params={"address": "not_hex", "bytes": [0x90]},
+            validators=[_expect_error(error_code="INVALID_ADDRESS")],
+            skip_reason=None if _proc_ok else "No process attached",
+        )
+        all_tests["err_write_memory_invalid_addr"].run(client)
+
+        all_tests["err_write_string_invalid_addr"] = _ErrorCase(
+            "Err: write_string rejects non-hex address",
+            "write_string",
+            params={"address": "not_hex", "value": "x", "wide": False},
+            validators=[_expect_error(error_code="INVALID_ADDRESS")],
+            skip_reason=None if _proc_ok else "No process attached",
+        )
+        all_tests["err_write_string_invalid_addr"].run(client)
+
+        all_tests["err_disassemble_invalid_addr"] = _ErrorCase(
+            "Err: disassemble rejects non-hex address",
+            "disassemble",
+            params={"address": "not_hex", "count": 1},
+            validators=[_expect_error(error_code="INVALID_ADDRESS")],
+            skip_reason=None if _proc_ok else "No process attached",
+        )
+        all_tests["err_disassemble_invalid_addr"].run(client)
+
+        all_tests["err_find_references_invalid_addr"] = _ErrorCase(
+            "Err: find_references rejects non-hex address",
+            "find_references",
+            params={"address": "not_hex"},
+            validators=[_expect_error(error_code="INVALID_ADDRESS")],
+            skip_reason=None if _proc_ok else "No process attached",
+        )
+        all_tests["err_find_references_invalid_addr"].run(client)
+
+        all_tests["err_set_breakpoint_invalid_addr"] = _ErrorCase(
+            "Err: set_breakpoint rejects non-hex address",
+            "set_breakpoint",
+            params={"address": "not_hex", "id": "err_bp_invalid"},
+            validators=[_expect_error(error_code="INVALID_ADDRESS")],
+            skip_reason=None if _proc_ok else "No process attached",
+        )
+        all_tests["err_set_breakpoint_invalid_addr"].run(client)
+
+        # --- INVALID_PARAMS coverage -----------------------------------------
+        all_tests["err_scan_all_missing_value"] = _ErrorCase(
+            "Err: scan_all without value param",
+            "scan_all",
+            params={"type": "dword"},  # missing 'value'
+            validators=[_expect_error(error_code="INVALID_PARAMS")],
+            skip_reason=None if _proc_ok else "No process attached",
+        )
+        all_tests["err_scan_all_missing_value"].run(client)
+
+        all_tests["err_read_integer_unknown_type"] = _ErrorCase(
+            "Err: read_integer with unknown variable type",
+            "read_integer",
+            params={"address": hex(module_base) if module_base else "0x00400000",
+                    "type": "not_a_type"},
+            validators=[_expect_error(error_code="INVALID_PARAMS")],
+            skip_reason=None if _proc_ok else "No process attached",
+        )
+        all_tests["err_read_integer_unknown_type"].run(client)
+
+        all_tests["err_write_integer_unknown_type"] = _ErrorCase(
+            "Err: write_integer with unknown variable type",
+            "write_integer",
+            params={"address": _scratch_hex0 if _scratch_addr else "0x0",
+                    "value": 0, "type": "not_a_type"},
+            validators=[_expect_error(error_code="INVALID_PARAMS")],
+            skip_reason=_write_skip,
+        )
+        all_tests["err_write_integer_unknown_type"].run(client)
+
+        all_tests["err_auto_assemble_missing_script"] = _ErrorCase(
+            "Err: auto_assemble without script param",
+            "auto_assemble",
+            params={},
+            validators=[_expect_error(error_code="INVALID_PARAMS")],
+            skip_reason=None if _proc_ok else "No process attached",
+        )
+        all_tests["err_auto_assemble_missing_script"].run(client)
+
+        all_tests["err_auto_assemble_check_missing_script"] = _ErrorCase(
+            "Err: auto_assemble_check without script param",
+            "auto_assemble_check",
+            params={},
+            validators=[_expect_error(error_code="INVALID_PARAMS")],
+        )
+        all_tests["err_auto_assemble_check_missing_script"].run(client)
+
+        all_tests["err_assemble_instruction_missing_line"] = _ErrorCase(
+            "Err: assemble_instruction without line param",
+            "assemble_instruction",
+            params={},
+            validators=[_expect_error(error_code="INVALID_PARAMS")],
+            skip_reason=None if _proc_ok else "No process attached",
+        )
+        all_tests["err_assemble_instruction_missing_line"].run(client)
+
+        all_tests["err_create_structure_missing_name"] = _ErrorCase(
+            "Err: get_structure_by_name without name",
+            "get_structure_by_name",
+            params={"name": ""},
+            validators=[_expect_error(error_code="INVALID_PARAMS")],
+        )
+        all_tests["err_create_structure_missing_name"].run(client)
+
+        # --- NOT_FOUND coverage ----------------------------------------------
+        all_tests["err_remove_breakpoint_unknown_id"] = _ErrorCase(
+            "Err: remove_breakpoint on unknown id",
+            "remove_breakpoint",
+            params={"id": "definitely_not_a_bp_id_xyz_12345"},
+            validators=[_expect_error(error_code="NOT_FOUND")],
+        )
+        all_tests["err_remove_breakpoint_unknown_id"].run(client)
+
+        all_tests["err_get_symbol_address_unknown"] = _ErrorCase(
+            "Err: get_symbol_address on unknown symbol",
+            "get_symbol_address",
+            params={"symbol": "definitely_not_a_symbol_xyz_12345"},
+            validators=[_expect_error(error_code="NOT_FOUND")],
+        )
+        all_tests["err_get_symbol_address_unknown"].run(client)
+
+        all_tests["err_get_structure_by_name_unknown"] = _ErrorCase(
+            "Err: get_structure_by_name on unknown name",
+            "get_structure_by_name",
+            params={"name": "mcp_struct_does_not_exist_xyz_12345"},
+            validators=[_expect_error(error_code="NOT_FOUND")],
+        )
+        all_tests["err_get_structure_by_name_unknown"].run(client)
+
+        all_tests["err_get_memory_record_unknown_id"] = _ErrorCase(
+            "Err: get_memory_record on unknown id",
+            "get_memory_record",
+            params={"id": 99999},
+            validators=[_expect_error(error_code="NOT_FOUND")],
+        )
+        all_tests["err_get_memory_record_unknown_id"].run(client)
+
+        all_tests["err_persistent_scan_unknown"] = _ErrorCase(
+            "Err: persistent_scan_first_scan on never-created scan",
+            "persistent_scan_first_scan",
+            params={"name": "mcp_persistent_does_not_exist_xyz", "value": "1",
+                    "type": "dword", "scan_option": "exact"},
+            # Lua handler treats "scan not found" as INVALID_PARAMS because
+            # the name is a user-supplied identifier, not a runtime resource.
+            validators=[_expect_error(error_code="INVALID_PARAMS")],
+            skip_reason=None if _proc_ok else "No process attached",
+        )
+        all_tests["err_persistent_scan_unknown"].run(client)
+
+        # --- OUT_OF_RESOURCES: exhaust all 4 hardware breakpoint slots -------
+        # Set BPs at 4 distinct addresses inside the attached module's code
+        # section, then try a 5th. The handler must reject with
+        # error_code=OUT_OF_RESOURCES. Finally clean up all 4 slots.
+        _oor_skip = None if (_proc_ok and entry_point) else "Needs an entry point inside an attached process"
+        _oor_bp_ids = []
+        if _oor_skip is None:
+            # Clear any leftover breakpoints from earlier tests.
+            client.send_command("clear_all_breakpoints", {})
+
+            for _oor_i in range(4):
+                _oor_bp_id = f"err_oor_bp_{_oor_i}"
+                _oor_addr = hex(entry_point + _oor_i * 0x10)
+                _oor_key = f"err_oor_fixture_bp_{_oor_i}"
+                _add(_oor_key,
+                     f"OOR fixture: set BP {_oor_i+1}/4 at {_oor_addr}",
+                     "set_breakpoint",
+                     params={"address": _oor_addr, "id": _oor_bp_id,
+                             "capture_registers": False, "capture_stack": False},
+                     validators=[has_field("success", bool), field_equals("success", True),
+                                 has_field("slot", int)],
+                     skip_reason=_oor_skip)
+                if (all_tests.get(_oor_key) is not None and
+                        all_tests[_oor_key].result == TestResult.PASSED):
+                    _oor_bp_ids.append(_oor_bp_id)
+
+        all_tests["err_bp_slot_exhaustion"] = _ErrorCase(
+            "Err: set_breakpoint rejects 5th BP with OUT_OF_RESOURCES",
+            "set_breakpoint",
+            params={"address": hex(entry_point + 4 * 0x10) if entry_point else "0x0",
+                    "id": "err_oor_bp_5",
+                    "capture_registers": False, "capture_stack": False},
+            validators=[_expect_error(error_code="OUT_OF_RESOURCES")],
+            skip_reason="Fewer than 4 fixture BPs installed" if len(_oor_bp_ids) < 4 else None,
+        )
+        all_tests["err_bp_slot_exhaustion"].run(client)
+
+        # Cleanup — remove every fixture BP we successfully installed.
+        for _cleanup_id in _oor_bp_ids:
+            try:
+                client.send_command("remove_breakpoint", {"id": _cleanup_id})
+            except Exception:
+                pass
+        # Also clear any that leaked past remove_breakpoint.
+        try:
+            client.send_command("clear_all_breakpoints", {})
+        except Exception:
+            pass
 
         # ---------- Cleanup: free the Unit-8 shared-memory alloc if it succeeded ----------
         if _ext_u8_shared_addr:
@@ -2587,6 +2832,27 @@ def main():
         "ext_u23_set_progress_value",
     ]
 
+    _err_path_keys = [
+        # INVALID_ADDRESS
+        "err_write_integer_invalid_addr", "err_write_memory_invalid_addr",
+        "err_write_string_invalid_addr", "err_disassemble_invalid_addr",
+        "err_find_references_invalid_addr", "err_set_breakpoint_invalid_addr",
+        # INVALID_PARAMS
+        "err_scan_all_missing_value", "err_read_integer_unknown_type",
+        "err_write_integer_unknown_type", "err_auto_assemble_missing_script",
+        "err_auto_assemble_check_missing_script",
+        "err_assemble_instruction_missing_line",
+        "err_create_structure_missing_name",
+        # NOT_FOUND
+        "err_remove_breakpoint_unknown_id", "err_get_symbol_address_unknown",
+        "err_get_structure_by_name_unknown", "err_get_memory_record_unknown_id",
+        "err_persistent_scan_unknown",
+        # OUT_OF_RESOURCES — fixtures + the actual exhaustion test
+        "err_oor_fixture_bp_0", "err_oor_fixture_bp_1",
+        "err_oor_fixture_bp_2", "err_oor_fixture_bp_3",
+        "err_bp_slot_exhaustion",
+    ]
+
     # =========================================================================
     # SUMMARY
     # =========================================================================
@@ -2634,6 +2900,7 @@ def main():
         "Ext Unit-21":   _ext_u21_keys,
         "Ext Unit-22":   _ext_u22_keys,
         "Ext Unit-23":   _ext_u23_keys,
+        "Error Paths":   _err_path_keys,
     }
     
     for cat_name, tests in categories.items():

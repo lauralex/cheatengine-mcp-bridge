@@ -928,6 +928,14 @@ local function cmd_scan_all(params)
     local value = params.value
     local vtype = params.type or "dword"
 
+    if value == nil or (type(value) ~= "string" and type(value) ~= "number") then
+        return {
+            success = false,
+            error = "Missing or invalid 'value' parameter",
+            error_code = "INVALID_PARAMS",
+        }
+    end
+
     local ms_ok, ms = pcall(createMemScan)
     if not ms_ok or not ms then
         return {
@@ -3819,23 +3827,39 @@ local function cmd_assemble_instruction(params)
     local skipRangeCheck = params.skip_range_check or false
 
     if not line or line == "" then
-        return { success = false, error = "No instruction line provided" }
+        return {
+            success = false,
+            error = "No instruction line provided",
+            error_code = "INVALID_PARAMS",
+        }
     end
 
     if type(address) == "string" then address = getAddressSafe(address) end
     if address == nil and params.address ~= nil then
-        return { success = false, error = "Invalid address: " .. tostring(params.address) }
+        return {
+            success = false,
+            error = "Invalid address: " .. tostring(params.address),
+            error_code = "INVALID_ADDRESS",
+        }
     end
 
     -- assemble() accepts nil address; it skips relative-offset resolution in that case
     local asmOk, result = pcall(assemble, line, address, preference, skipRangeCheck)
 
     if not asmOk then
-        return { success = false, error = "assemble() raised error: " .. tostring(result) }
+        return {
+            success = false,
+            error = "assemble() raised error: " .. tostring(result),
+            error_code = "CE_API_UNAVAILABLE",
+        }
     end
 
     if not result then
-        return { success = false, error = "assemble() returned nil (invalid instruction or address)" }
+        return {
+            success = false,
+            error = "assemble() returned nil (invalid instruction or address)",
+            error_code = "INVALID_PARAMS",
+        }
     end
 
     local bytes = {}
@@ -3851,13 +3875,22 @@ local function cmd_auto_assemble_check(params)
     local targetSelf = params.target_self or false
 
     if not script or script == "" then
-        return { success = false, error = "No script provided" }
+        return {
+            success = false,
+            error = "No script provided",
+            error_code = "INVALID_PARAMS",
+        }
     end
 
     local checkOk, valid, errMsg = pcall(autoAssembleCheck, script, enable, targetSelf)
 
     if not checkOk then
-        return { success = false, valid = false, errors = { tostring(valid) } }
+        return {
+            success = false,
+            valid = false,
+            errors = { tostring(valid) },
+            error_code = "CE_API_UNAVAILABLE",
+        }
     end
 
     if valid then
