@@ -680,6 +680,52 @@ def ping() -> str:
     """Check connectivity and get version info."""
     return format_result(ce_client.send_command("ping"))
 
+# --- INPUT AUTOMATION (Unit-17) — system-wide, no process guard required ---
+
+@mcp.tool()
+def get_pixel(x: int, y: int) -> str:
+    """Get the colour of a screen pixel at (x, y). Returns r, g, b channels and the raw COLORREF integer."""
+    return format_result(ce_client.send_command("get_pixel", {"x": x, "y": y}))
+
+@mcp.tool()
+def get_mouse_pos() -> str:
+    """Get the current mouse cursor position. Returns x and y screen coordinates."""
+    return format_result(ce_client.send_command("get_mouse_pos"))
+
+@mcp.tool()
+def set_mouse_pos(x: int, y: int) -> str:
+    """Move the mouse cursor to screen position (x, y)."""
+    return format_result(ce_client.send_command("set_mouse_pos", {"x": x, "y": y}))
+
+@mcp.tool()
+def is_key_pressed(vk: int) -> str:
+    """Check whether a key is currently held down.
+    vk is a Windows virtual-key code (e.g. 0x41 for 'A', 0x20 for Space, 0x01 for left mouse button).
+    Returns pressed: bool."""
+    return format_result(ce_client.send_command("is_key_pressed", {"vk": vk}))
+
+@mcp.tool()
+def key_down(vk: int) -> str:
+    """Simulate pressing a key down (does NOT release it automatically).
+    vk is a Windows virtual-key code (e.g. 0x41 for 'A', 0x20 for Space)."""
+    return format_result(ce_client.send_command("key_down", {"vk": vk}))
+
+@mcp.tool()
+def key_up(vk: int) -> str:
+    """Release a key that was pressed with key_down.
+    vk is a Windows virtual-key code (e.g. 0x41 for 'A', 0x20 for Space)."""
+    return format_result(ce_client.send_command("key_up", {"vk": vk}))
+
+@mcp.tool()
+def do_key_press(vk: int) -> str:
+    """Simulate a full key press (down + up) for the given key.
+    vk is a Windows virtual-key code (e.g. 0x41 for 'A', 0x20 for Space)."""
+    return format_result(ce_client.send_command("do_key_press", {"vk": vk}))
+
+@mcp.tool()
+def get_screen_info() -> str:
+    """Get the primary screen dimensions and DPI. Returns width, height (pixels) and dpi."""
+    return format_result(ce_client.send_command("get_screen_info"))
 # --- WINDOW / GUI TOOLS (Unit-16) ---
 
 @mcp.tool()
