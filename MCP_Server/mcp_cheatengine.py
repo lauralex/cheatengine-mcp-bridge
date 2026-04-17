@@ -569,6 +569,90 @@ def ping() -> str:
     """Check connectivity and get version info."""
     return format_result(ce_client.send_command("ping"))
 
+# >>> BEGIN UNIT-07 Process Lifecycle <<<
+
+@mcp.tool()
+def open_process(process_id_or_name: str) -> str:
+    """Open a process by PID or name and attach Cheat Engine to it.
+
+    Args:
+        process_id_or_name: Numeric PID as string (e.g. "12345") or process name (e.g. "notepad.exe").
+
+    Returns:
+        JSON with {success, process_id, process_name}.
+    """
+    return format_result(ce_client.send_command("open_process", {"process_id_or_name": process_id_or_name}))
+
+@mcp.tool()
+def get_process_list() -> str:
+    """Get the list of running processes on the system.
+
+    Returns:
+        JSON with {success, count, processes: [{pid: int, name: str}, ...]}.
+    """
+    return format_result(ce_client.send_command("get_process_list"))
+
+@mcp.tool()
+def get_processid_from_name(name: str) -> str:
+    """Look up the PID of a process by its executable name.
+
+    Args:
+        name: Process name to search for (e.g. "notepad.exe").
+
+    Returns:
+        JSON with {success, process_id} or {success=false, error, error_code="NOT_FOUND"}.
+    """
+    return format_result(ce_client.send_command("get_processid_from_name", {"name": name}))
+
+@mcp.tool()
+def get_foreground_process() -> str:
+    """Get the PID and window handle of the process currently in the foreground.
+
+    Returns:
+        JSON with {success, process_id, window_handle}.
+    """
+    return format_result(ce_client.send_command("get_foreground_process"))
+
+@mcp.tool()
+def create_process(path: str, args: str = "", debug: bool = False, break_on_entry: bool = False) -> str:
+    """Create and optionally debug a new process.
+
+    Args:
+        path: Full path to the executable.
+        args: Command-line arguments string (default empty).
+        debug: Attach Windows debugger if True.
+        break_on_entry: Break on entry point if True (requires debug=True).
+
+    Returns:
+        JSON with {success, process_id}.
+    """
+    return format_result(ce_client.send_command("create_process", {
+        "path": path,
+        "args": args,
+        "debug": debug,
+        "break_on_entry": break_on_entry,
+    }))
+
+@mcp.tool()
+def get_opened_process_id() -> str:
+    """Get the PID of the process currently attached to Cheat Engine.
+
+    Returns:
+        JSON with {success, process_id} or {success=false, error_code="NO_PROCESS"}.
+    """
+    return format_result(ce_client.send_command("get_opened_process_id"))
+
+@mcp.tool()
+def get_opened_process_handle() -> str:
+    """Get the OS handle of the process currently attached to Cheat Engine as a hex string.
+
+    Returns:
+        JSON with {success, handle} where handle is a hex string.
+    """
+    return format_result(ce_client.send_command("get_opened_process_handle"))
+
+# >>> END UNIT-07 <<<
+
 if __name__ == "__main__":
     try:
         debug_log("Starting FastMCP server (v11/v99 compatible)...")
