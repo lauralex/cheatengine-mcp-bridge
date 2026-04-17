@@ -124,6 +124,20 @@ local function captureStack(depth)
     return stack
 end
 
+-- Pagination helper: parse offset/limit params and slice a table.
+-- Returns: limit, offset, page_table, total
+-- Usage: local limit, offset, page, total = paginate(params, allItems, 100)
+local function paginate(params, items, defaultLimit)
+    local limit = math.max(1, math.min(params.limit or params.max or defaultLimit or 100, 10000))
+    local offset = math.max(0, params.offset or 0)
+    local total = #items
+    local page = {}
+    for i = offset + 1, math.min(offset + limit, total) do
+        page[#page + 1] = items[i]
+    end
+    return limit, offset, page, total
+end
+
 -- ============================================================================
 -- CLEANUP & SAFETY ROUTINES (CRITICAL FOR ROBUSTNESS)
 -- ============================================================================
@@ -446,6 +460,10 @@ local function cmd_enum_modules(params)
             })
         end
     end
+    
+    local fallback_used = #result > 0 and result[1] and result[1].source ~= nil
+    local limit, offset, page, total = paginate(params, result, 100)
+    return { success = true, total = total, offset = offset, limit = limit, returned = #page, modules = page, fallback_used = fallback_used }
 
     -- If both enumModules and the AOB fallback failed to produce any modules, report failure honestly
     if #result == 0 and (pid or 0) > 0 then
@@ -719,29 +737,33 @@ local function cmd_scan_all(params)
 end
 
 local function cmd_get_scan_results(params)
-    local max = params.max or 100
-    
-    if not serverState.scan_foundlist then 
-        return { success = false, error = "No scan results. Run scan_all first." } 
+    -- limit: preferred param; max: backward-compat alias
+    local limit = params.limit or params.max or 100
+    limit = math.max(1, math.min(limit, 10000))
+    local offset = math.max(0, params.offset or 0)
+
+    if not serverState.scan_foundlist then
+        return { success = false, error = "No scan results. Run scan_all first." }
     end
-    
+
     local fl = serverState.scan_foundlist
+    local total = fl.getCount()
     local results = {}
-    local count = math.min(fl.getCount(), max)
-    
-    for i = 0, count - 1 do
+    local endIdx = math.min(offset + limit, total) - 1
+
+    for i = offset, endIdx do
         -- IMPORTANT: Ensure address has 0x prefix for consistency with all other commands
         local addrStr = fl.getAddress(i)
         if addrStr and not addrStr:match("^0x") and not addrStr:match("^0X") then
             addrStr = "0x" .. addrStr
         end
-        table.insert(results, { 
-            address = addrStr, 
-            value = fl.getValue(i) 
+        table.insert(results, {
+            address = addrStr,
+            value = fl.getValue(i)
         })
     end
-    
-    return { success = true, results = results, total = fl.getCount(), returned = count }
+
+    return { success = true, total = total, offset = offset, limit = limit, returned = #results, results = results }
 end
 
 -- ============================================================================
@@ -872,35 +894,37 @@ end
 
 local function cmd_disassemble(params)
     local addr = params.address
+    local count = params.count or 20
     local count = math.max(1, math.min(params.count or 20, 1000))
 
     if type(addr) == "string" then addr = getAddressSafe(addr) end
     if not addr then return { success = false, error = "Invalid address" } end
-    
-    local instructions = {}
+
+    local allInstructions = {}
     local currentAddr = addr
-    
+
     for i = 1, count do
         local ok, disasm = pcall(disassemble, currentAddr)
         if not ok or not disasm then break end
-        
+
         local instSize = getInstructionSize(currentAddr) or 1
         local instBytes = readBytes(currentAddr, instSize, true) or {}
         local bytesHex = {}
         for _, b in ipairs(instBytes) do table.insert(bytesHex, string.format("%02X", b)) end
-        
-        table.insert(instructions, {
+
+        table.insert(allInstructions, {
             address = toHex(currentAddr),
             offset = currentAddr - addr,
             size = instSize,
             bytes = table.concat(bytesHex, " "),
             instruction = disasm
         })
-        
+
         currentAddr = currentAddr + instSize
     end
-    
-    return { success = true, start_address = toHex(addr), count = #instructions, instructions = instructions }
+
+    local limit, offset, page, total = paginate(params, allInstructions, 100)
+    return { success = true, start_address = toHex(addr), total = total, offset = offset, limit = limit, returned = #page, instructions = page }
 end
 
 local function cmd_get_instruction_info(params)
@@ -1111,14 +1135,13 @@ end
 
 local function cmd_find_references(params)
     local targetAddr = params.address
-    local limit = params.limit or 50
-    
+
     if type(targetAddr) == "string" then targetAddr = getAddressSafe(targetAddr) end
     if not targetAddr then return { success = false, error = "Invalid address" } end
-    
+
     local is64 = targetIs64Bit()
     local pattern
-    
+
     -- Convert address to AOB pattern (little-endian)
     if is64 and targetAddr > 0xFFFFFFFF then
         -- 64-bit address: 8 bytes little-endian
@@ -1128,7 +1151,7 @@ local function cmd_find_references(params)
             bytes[i] = tempAddr % 256
             tempAddr = math.floor(tempAddr / 256)
         end
-        pattern = string.format("%02X %02X %02X %02X %02X %02X %02X %02X", 
+        pattern = string.format("%02X %02X %02X %02X %02X %02X %02X %02X",
             bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7], bytes[8])
     else
         -- 32-bit address: 4 bytes little-endian
@@ -1138,57 +1161,57 @@ local function cmd_find_references(params)
         local b4 = math.floor(targetAddr / 16777216) % 256
         pattern = string.format("%02X %02X %02X %02X", b1, b2, b3, b4)
     end
-    
-    local results = AOBScan(pattern, "+X")
-    if not results then return { success = true, target = toHex(targetAddr), count = 0, references = {}, arch = is64 and "x64" or "x86" } end
-    
-    local refs = {}
-    for i = 0, math.min(results.Count - 1, limit - 1) do
-        local refAddr = tonumber(results.getString(i), 16)
-        local disasm = disassemble(refAddr) or "???"
-        table.insert(refs, {
-            address = toHex(refAddr),
-            instruction = disasm
-        })
+
+    local scanResults = AOBScan(pattern, "+X")
+    if not scanResults then
+        local limit, offset, page, total = paginate(params, {}, 50)
+        return { success = true, target = toHex(targetAddr), total = total, offset = offset, limit = limit, returned = 0, references = {}, arch = is64 and "x64" or "x86" }
     end
-    results.destroy()
-    
-    return { success = true, target = toHex(targetAddr), count = #refs, references = refs, arch = is64 and "x64" or "x86" }
+
+    local allRefs = {}
+    for i = 0, scanResults.Count - 1 do
+        local refAddr = tonumber(scanResults.getString(i), 16)
+        local disasm = disassemble(refAddr) or "???"
+        allRefs[#allRefs + 1] = { address = toHex(refAddr), instruction = disasm }
+    end
+    scanResults.destroy()
+
+    local limit, offset, page, total = paginate(params, allRefs, 50)
+    return { success = true, target = toHex(targetAddr), total = total, offset = offset, limit = limit, returned = #page, references = page, arch = is64 and "x64" or "x86" }
 end
 
 local function cmd_find_call_references(params)
     local funcAddr = params.address or params.function_address
-    local limit = params.limit or 100
-    
+
     if type(funcAddr) == "string" then funcAddr = getAddressSafe(funcAddr) end
     if not funcAddr then return { success = false, error = "Invalid function address" } end
-    
-    local callers = {}
-    local results = AOBScan("E8 ?? ?? ?? ??", "+X")
-    
-    if results then
-        for i = 0, results.Count - 1 do
-            if #callers >= limit then break end
-            
-            local callAddr = tonumber(results.getString(i), 16)
+
+    -- Collect ALL matching callers to get accurate total for pagination
+    local allCallers = {}
+    local scanResults = AOBScan("E8 ?? ?? ?? ??", "+X")
+
+    if scanResults then
+        for i = 0, scanResults.Count - 1 do
+            local callAddr = tonumber(scanResults.getString(i), 16)
             local relOffset = readInteger(callAddr + 1)
-            
+
             if relOffset then
                 if relOffset > 0x7FFFFFFF then relOffset = relOffset - 0x100000000 end
                 local target = callAddr + 5 + relOffset
-                
+
                 if target == funcAddr then
-                    table.insert(callers, {
+                    allCallers[#allCallers + 1] = {
                         caller_address = toHex(callAddr),
                         instruction = disassemble(callAddr) or "???"
-                    })
+                    }
                 end
             end
         end
-        results.destroy()
+        scanResults.destroy()
     end
-    
-    return { success = true, function_address = toHex(funcAddr), count = #callers, callers = callers }
+
+    local limit, offset, page, total = paginate(params, allCallers, 100)
+    return { success = true, function_address = toHex(funcAddr), total = total, offset = offset, limit = limit, returned = #page, callers = page }
 end
 
 -- ============================================================================
@@ -1363,23 +1386,23 @@ end
 local function cmd_get_breakpoint_hits(params)
     local bpId = params.id
     local clear = params.clear ~= false
-    
+
     local hits
     if bpId then
         hits = serverState.breakpoint_hits[bpId] or {}
         if clear then serverState.breakpoint_hits[bpId] = {} end
     else
-        -- Get all hits
         hits = {}
         for id, hitsForBp in pairs(serverState.breakpoint_hits) do
             for _, hit in ipairs(hitsForBp) do
-                table.insert(hits, hit)
+                hits[#hits + 1] = hit
             end
         end
         if clear then serverState.breakpoint_hits = {} end
     end
-    
-    return { success = true, count = #hits, hits = hits }
+
+    local limit, offset, page, total = paginate(params, hits, 100)
+    return { success = true, total = total, offset = offset, limit = limit, returned = #page, hits = page }
 end
 
 local function cmd_list_breakpoints(params)
@@ -1590,23 +1613,16 @@ end
 local function cmd_get_thread_list(params)
     local list = createStringlist()
     getThreadlist(list)
-    
-    local threads = {}
+
+    local allThreads = {}
     for i = 0, list.Count - 1 do
         local idHex = list[i]
-        table.insert(threads, {
-            id_hex = idHex,
-            id_int = tonumber(idHex, 16)
-        })
+        allThreads[#allThreads + 1] = { id_hex = idHex, id_int = tonumber(idHex, 16) }
     end
-    
     list.destroy()
-    
-    return {
-        success = true,
-        count = #threads,
-        threads = threads
-    }
+
+    local limit, offset, page, total = paginate(params, allThreads, 100)
+    return { success = true, total = total, offset = offset, limit = limit, returned = #page, threads = page }
 end
 
 -- AutoAssemble: Execute an AutoAssembler script
@@ -1641,53 +1657,42 @@ end
 
 -- Enum Memory Regions Full: Uses CE's native enumMemoryRegions for accurate data
 local function cmd_enum_memory_regions_full(params)
-    local maxRegions = params.max or 500
-    
     local ok, regions = pcall(enumMemoryRegions)
     if not ok or not regions then
         return { success = false, error = "enumMemoryRegions failed" }
     end
-    
-    local result = {}
+
+    local allRegions = {}
     for i, r in ipairs(regions) do
-        if i > maxRegions then break end
-        
-        -- Determine protection string
         local prot = r.Protect or 0
         local state = r.State or 0
-        local protStr = ""
-        
-        -- PAGE_EXECUTE flags
-        if prot == 0x10 then protStr = "X"
+        local protStr
+        if     prot == 0x10 then protStr = "X"
         elseif prot == 0x20 then protStr = "RX"
         elseif prot == 0x40 then protStr = "RWX"
         elseif prot == 0x80 then protStr = "WX"
         elseif prot == 0x02 then protStr = "R"
         elseif prot == 0x04 then protStr = "RW"
         elseif prot == 0x08 then protStr = "W"
-        else protStr = string.format("0x%X", prot)
+        else                     protStr = string.format("0x%X", prot)
         end
-        
-        table.insert(result, {
-            base = toHex(r.BaseAddress or 0),
-            allocation_base = toHex(r.AllocationBase or 0),
-            size = r.RegionSize or 0,
-            state = state,
-            protect = prot,
-            protect_string = protStr,
-            type = r.Type or 0,
-            -- State decoded
-            is_committed = state == 0x1000,
-            is_reserved = state == 0x2000,
-            is_free = state == 0x10000
-        })
+
+        allRegions[#allRegions + 1] = {
+            base             = toHex(r.BaseAddress or 0),
+            allocation_base  = toHex(r.AllocationBase or 0),
+            size             = r.RegionSize or 0,
+            state            = state,
+            protect          = prot,
+            protect_string   = protStr,
+            type             = r.Type or 0,
+            is_committed     = state == 0x1000,
+            is_reserved      = state == 0x2000,
+            is_free          = state == 0x10000
+        }
     end
-    
-    return {
-        success = true,
-        count = #result,
-        regions = result
-    }
+
+    local limit, offset, page, total = paginate(params, allRegions, 100)
+    return { success = true, total = total, offset = offset, limit = limit, returned = #page, regions = page }
 end
 
 -- Read Pointer Chain: Follow a chain of pointers to resolve dynamic addresses
@@ -2283,8 +2288,8 @@ local function PipeWorker(thread)
     
     while not thread.Terminated do
         -- Create Pipe Instance per connection attempt
-        -- Increased buffer size to 64KB for better throughput
-        local pipe = createPipe(PIPE_NAME, 65536, 65536)
+        -- Increased buffer size to 256KB for better throughput
+        local pipe = createPipe(PIPE_NAME, 262144, 262144)  -- 256 KB buffers (was 64 KB)
         if not pipe then
             log("Fatal: Failed to create pipe")
             return
