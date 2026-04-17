@@ -680,6 +680,60 @@ def ping() -> str:
     """Check connectivity and get version info."""
     return format_result(ce_client.send_command("ping"))
 
+# --- MEMORY OPERATIONS (Unit 14) ---
+
+@mcp.tool()
+def copy_memory(source: str, size: int, dest: str = None, method: int = 0) -> str:
+    """Copy memory between addresses. Methods: 0=target→target, 1=target→CE, 2=CE→target, 3=CE→CE. Returns dest_address allocated by CE if dest is None."""
+    return format_result(ce_client.send_command("copy_memory", {
+        "source": source, "size": size, "dest": dest, "method": method
+    }))
+
+@mcp.tool()
+def compare_memory(addr1: str, addr2: str, size: int, method: int = 0) -> str:
+    """Compare two memory regions. Methods: 0=target/target, 1=addr1=target addr2=CE, 2=both CE. Returns equal flag and first_diff byte index (-1 if equal)."""
+    return format_result(ce_client.send_command("compare_memory", {
+        "addr1": addr1, "addr2": addr2, "size": size, "method": method
+    }))
+
+@mcp.tool()
+def write_region_to_file(address: str, size: int, filename: str) -> str:
+    """Write a memory region to a file. Filename must be an absolute path and must not contain '..' components."""
+    return format_result(ce_client.send_command("write_region_to_file", {
+        "address": address, "size": size, "filename": filename
+    }))
+
+@mcp.tool()
+def read_region_from_file(filename: str, destination: str) -> str:
+    """Read a file into memory at the given destination address. Filename must be an absolute path and must not contain '..' components."""
+    return format_result(ce_client.send_command("read_region_from_file", {
+        "filename": filename, "destination": destination
+    }))
+
+@mcp.tool()
+def md5_memory(address: str, size: int) -> str:
+    """Calculate the MD5 hash of a memory region. Returns the hash as a hex string."""
+    return format_result(ce_client.send_command("md5_memory", {
+        "address": address, "size": size
+    }))
+
+@mcp.tool()
+def md5_file(filename: str) -> str:
+    """Calculate the MD5 hash of a file on the CE host. Filename must not contain '..' components."""
+    return format_result(ce_client.send_command("md5_file", {"filename": filename}))
+
+@mcp.tool()
+def create_section(size: int) -> str:
+    """Create a Windows section (shared memory) of the given size. Returns a handle as a hex string."""
+    return format_result(ce_client.send_command("create_section", {"size": size}))
+
+@mcp.tool()
+def map_view_of_section(handle: str, address: str = None, size: int = 0) -> str:
+    """Map a section into the target process. 'handle' is from create_section. 'address' is optional preferred base. Returns mapped_address."""
+    return format_result(ce_client.send_command("map_view_of_section", {
+        "handle": handle, "address": address, "size": size
+    }))
+
 # >>> BEGIN UNIT-12 Symbol Management <<<
 @mcp.tool()
 def register_symbol(name: str, address: str, do_not_save: bool = False) -> str:
