@@ -569,6 +569,112 @@ def ping() -> str:
     """Check connectivity and get version info."""
     return format_result(ce_client.send_command("ping"))
 
+# >>> BEGIN UNIT-12 Symbol Management <<<
+@mcp.tool()
+def register_symbol(name: str, address: str, do_not_save: bool = False) -> str:
+    """Register a user-defined symbol with a given name and address.
+
+    Args:
+        name: Symbol name to register.
+        address: Address to bind to the symbol (hex string or decimal).
+        do_not_save: If True, this symbol is not persisted when the CE table is saved.
+
+    Returns JSON with: success, name, address.
+    """
+    return format_result(ce_client.send_command("register_symbol", {
+        "name": name, "address": address, "do_not_save": do_not_save
+    }))
+
+@mcp.tool()
+def unregister_symbol(name: str) -> str:
+    """Remove a previously registered user-defined symbol.
+
+    Args:
+        name: Symbol name to unregister.
+
+    Returns JSON with: success.
+    """
+    return format_result(ce_client.send_command("unregister_symbol", {"name": name}))
+
+@mcp.tool()
+def enum_registered_symbols() -> str:
+    """List all user-registered symbols.
+
+    Returns JSON with: success, count, symbols (list of {name, address, module}).
+    """
+    return format_result(ce_client.send_command("enum_registered_symbols"))
+
+@mcp.tool()
+def delete_all_registered_symbols() -> str:
+    """Delete every user-registered symbol (both AA and Lua).
+
+    Returns JSON with: success, deleted_count.
+    """
+    return format_result(ce_client.send_command("delete_all_registered_symbols"))
+
+@mcp.tool()
+def enable_windows_symbols() -> str:
+    """Trigger download and load of Windows PDB symbol files.
+
+    Note: The actual PDB download and indexing is asynchronous; this call returns
+    immediately once the process has been initiated by Cheat Engine.
+
+    Returns JSON with: success.
+    """
+    return format_result(ce_client.send_command("enable_windows_symbols"))
+
+@mcp.tool()
+def enable_kernel_symbols() -> str:
+    """Enable kernel-mode symbol resolution (requires DBK driver).
+
+    Returns JSON with: success.
+    On failure returns error_code DBK_NOT_LOADED if the kernel driver is absent.
+    """
+    return format_result(ce_client.send_command("enable_kernel_symbols"))
+
+@mcp.tool()
+def get_symbol_info(name: str) -> str:
+    """Retrieve detailed information about a known symbol.
+
+    Requires an attached process.
+
+    Args:
+        name: Symbol or export name to look up.
+
+    Returns JSON with: success, name, address, module, size.
+    Returns error_code NOT_FOUND if the symbol is unknown.
+    """
+    return format_result(ce_client.send_command("get_symbol_info", {"name": name}))
+
+@mcp.tool()
+def get_module_size(module_name: str) -> str:
+    """Get the in-memory size of a loaded module.
+
+    Requires an attached process.
+
+    Args:
+        module_name: Module filename (e.g. 'kernel32.dll').
+
+    Returns JSON with: success, size.
+    """
+    return format_result(ce_client.send_command("get_module_size", {"module_name": module_name}))
+
+@mcp.tool()
+def load_new_symbols() -> str:
+    """Scan for newly loaded modules and import their symbols.
+
+    Returns JSON with: success.
+    """
+    return format_result(ce_client.send_command("load_new_symbols"))
+
+@mcp.tool()
+def reinitialize_symbol_handler() -> str:
+    """Perform a full reset and reload of the Cheat Engine symbol handler.
+
+    Returns JSON with: success.
+    """
+    return format_result(ce_client.send_command("reinitialize_symbol_handler"))
+# >>> END UNIT-12 <<<
 # --- UNIT-11: DEBUG CONTEXT + PER-THREAD BREAKPOINTS ---
 
 @mcp.tool()
