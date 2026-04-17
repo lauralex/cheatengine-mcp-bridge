@@ -680,6 +680,55 @@ def ping() -> str:
     """Check connectivity and get version info."""
     return format_result(ce_client.send_command("ping"))
 
+# >>> BEGIN UNIT-20b Shell Execution <<<
+def _check_shell_gate():
+    if os.environ.get("CE_MCP_ALLOW_SHELL") != "1":
+        return json.dumps({
+            "success": False,
+            "error": "Shell execution disabled. Set environment variable CE_MCP_ALLOW_SHELL=1 to enable.",
+            "error_code": "PERMISSION_DENIED"
+        })
+    return None
+
+@mcp.tool()
+def run_command(command: str, args: str = "") -> str:
+    """Execute a shell command in the host OS. SECURITY: Arbitrary code execution.
+
+    REQUIRES environment variable CE_MCP_ALLOW_SHELL=1 at server startup.
+    By default, this tool returns a PERMISSION_DENIED error.
+
+    Args:
+        command: Command path or name (e.g. "notepad.exe", "cmd.exe").
+        args: Arguments string.
+
+    Returns JSON with: success, output, exit_code.
+    """
+    blocked = _check_shell_gate()
+    if blocked:
+        return blocked
+    return format_result(ce_client.send_command("run_command", {"command": command, "args": args}))
+
+@mcp.tool()
+def shell_execute(command: str, args: str = "", verb: str = "open", working_dir: str = "") -> str:
+    """Invoke Windows ShellExecute. SECURITY: Arbitrary code execution.
+
+    REQUIRES environment variable CE_MCP_ALLOW_SHELL=1 at server startup.
+
+    Args:
+        command: Command or file to execute.
+        args: Arguments string.
+        verb: ShellExecute verb ("open", "edit", "print", "runas", etc.).
+        working_dir: Working directory (empty for current).
+
+    Returns JSON with: success.
+    """
+    blocked = _check_shell_gate()
+    if blocked:
+        return blocked
+    return format_result(ce_client.send_command("shell_execute", {
+        "command": command, "args": args, "verb": verb, "working_dir": working_dir
+    }))
+# >>> END UNIT-20b <<<
 # >>> BEGIN UNIT-20a File IO Clipboard <<<
 
 @mcp.tool()
